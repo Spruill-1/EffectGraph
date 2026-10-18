@@ -13,6 +13,7 @@ namespace ShaderLab::Effects
 
     // The guard lets a shader include the library more than once, or include
     // it after a caller prepended it.
+    // Two literals: MSVC v143 limits one to 16 KB.
     static const std::string s_colorMathHLSL = R"HLSL(
 #ifndef SHADERLAB_COLORMATH_HLSLI_INCLUDED
 #define SHADERLAB_COLORMATH_HLSLI_INCLUDED
@@ -343,7 +344,7 @@ float CieDeltaE94(float3 lab1, float3 lab2) {
     float t3 = dH / SH;
     return sqrt(t1*t1 + t2*t2 + t3*t3);
 }
-
+)HLSL" R"HLSL(
 // CIEDE2000
 float CieDeltaE2000(float3 lab1, float3 lab2) {
     float L1 = lab1.x, a1 = lab1.y, b1 = lab1.z;
