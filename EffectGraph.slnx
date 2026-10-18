@@ -1,0 +1,12 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="ARM64" />
+  </Configurations>
+  <Project Path="EffectGraphEngine.vcxproj" Id="a7a1e0f1-665c-4d06-9ac7-6d6b6a0d0f01" />
+  <Project Path="BuiltInEffects.vcxproj" Id="463424c5-37aa-4129-abab-1cd7f3bf2215" />
+  <Project Path="EffectGraphCompile.vcxproj" Id="05bd6911-0aea-4fd9-aaf6-95e061d5494e" />
+  <Project Path="EffectGraph.vcxproj" Id="61d99f51-6bae-4ac0-a59b-40b84a8c71df" />
+  <Project Path="TestEffectPlugin.vcxproj" Id="9b2e4f17-3c6a-4d85-b1e2-7a0c5d9f6e48" />
+  <Project Path="EffectGraphTests.vcxproj" Id="e7f3a2c5-8d41-4b6e-9a07-3c5d1f2b8e94" />
+</Solution>

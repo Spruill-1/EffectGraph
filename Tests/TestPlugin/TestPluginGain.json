@@ -1,0 +1,66 @@
+{
+  "formatVersion": 2,
+  "appVersion": "1.9.0",
+  "category": "Testing",
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Test Plugin Gain",
+      "type": "PixelShader",
+      "position": [
+        0.0,
+        0.0
+      ],
+      "properties": [
+        {
+          "name": "Gain",
+          "type": "float",
+          "value": 3
+        }
+      ],
+      "inputPins": [
+        {
+          "name": "I0",
+          "index": 0
+        }
+      ],
+      "outputPins": [
+        {
+          "name": "Output",
+          "index": 0
+        }
+      ],
+      "customEffect": {
+        "shaderType": 0,
+        "hlslSource": "// Multiplies its input's colour by Gain: the test plugin's effect.\nTexture2D Source : register(t0);\nSamplerState InputSampler : register(s0);\ncbuffer Constants : register(b0) { float Gain; };\nfloat4 main(float4 pos : SV_POSITION, float4 scenePos : SCENE_POSITION,\n            float4 uv0 : TEXCOORD0) : SV_TARGET\n{\n    float4 color = Source.Sample(InputSampler, uv0.xy);\n    return float4(color.rgb * Gain, color.a);\n}\n",
+        "inputNames": [
+          "Source"
+        ],
+        "parameters": [
+          {
+            "name": "Gain",
+            "typeName": "float",
+            "minValue": 0,
+            "maxValue": 10,
+            "step": 0.1,
+            "default": {
+              "name": "Gain",
+              "type": "float",
+              "value": 3
+            }
+          }
+        ],
+        "lookupInputCount": 0,
+        "threadGroupX": 8,
+        "threadGroupY": 8,
+        "threadGroupZ": 1,
+        "analysisOutputType": 0,
+        "analysisOutputSize": 256,
+        "shaderLabEffectId": "Test Plugin Gain",
+        "shaderLabEffectVersion": 1
+      }
+    }
+  ],
+  "edges": [],
+  "nextId": 2
+}

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EffectGraph.Native for C++ projects: the include path (EffectGraph.h and a
+  header per built-in effect), EffectGraph.lib for the project's platform, and
+  EffectGraph.dll copied beside the output. Out-of-tree effects work as in the
+  repository: add EffectGraphEffect items (see EffectGraph.targets) and the
+  package's EffectGraphCompile builds them.
+
+  Built-ins: include the header of each one you use, e.g.
+    #include "luminance_statistics.effect.h"
+  or EffectGraphBuiltIns.h for all of them; each registers itself at startup.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <EffectGraphNativeRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\'))</EffectGraphNativeRoot>
+    <EffectGraphNativeRid Condition="'$(Platform)' == 'x64'">win-x64</EffectGraphNativeRid>
+    <EffectGraphNativeRid Condition="'$(Platform)' == 'ARM64'">win-arm64</EffectGraphNativeRid>
+    <EffectGraphApiIncludeDir>$(EffectGraphNativeRoot)build\native\include</EffectGraphApiIncludeDir>
+    <!-- The tool runs on the build machine: x64 runs on x64 and on ARM64. -->
+    <EffectGraphCompilePath Condition="'$(EffectGraphCompilePath)' == '' and '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">$(EffectGraphNativeRoot)tools\arm64\EffectGraphCompile.exe</EffectGraphCompilePath>
+    <EffectGraphCompilePath Condition="'$(EffectGraphCompilePath)' == ''">$(EffectGraphNativeRoot)tools\x64\EffectGraphCompile.exe</EffectGraphCompilePath>
+  </PropertyGroup>
+
+  <Target Name="EffectGraphNativePlatformCheck" BeforeTargets="ClCompile" Condition="'$(EffectGraphNativeRid)' == ''">
+    <Error Text="EffectGraph.Native has x64 and ARM64 builds; this project builds for '$(Platform)'." />
+  </Target>
+
+  <ItemDefinitionGroup Condition="'$(EffectGraphNativeRid)' != ''">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(EffectGraphApiIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(EffectGraphNativeRoot)build\native\lib\$(Platform)\EffectGraph.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <Target Name="EffectGraphNativeCopyRuntime" AfterTargets="Build" Condition="'$(EffectGraphNativeRid)' != ''">
+    <Copy SourceFiles="$(EffectGraphNativeRoot)runtimes\$(EffectGraphNativeRid)\native\EffectGraph.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Import Project="$(MSBuildThisFileDirectory)EffectGraph.targets" />
+</Project>

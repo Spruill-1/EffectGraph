@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="EffectGraphCompile">
+      <UniqueIdentifier>{8A59967B-1238-4E48-985A-A73B87FC8DAA}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pch_engine.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="pch_engine.cpp" />
+    <ClCompile Include="EffectGraphCompile\Main.cpp">
+      <Filter>EffectGraphCompile</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,455 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Effects">
+      <UniqueIdentifier>{B78C1773-8A20-557D-B200-D75701FAADA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine">
+      <UniqueIdentifier>{E9C747DA-14E7-55EE-9297-3439D47A2563}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\Api">
+      <UniqueIdentifier>{D0020199-8F9D-4D16-A15D-499BDC6BB782}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Graph">
+      <UniqueIdentifier>{18B0C1C9-6B45-5B72-A098-18D7B0BC7D54}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Rendering">
+      <UniqueIdentifier>{1B1CB936-8741-5247-9EE2-98E5ED1DCF70}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Rendering\Evaluator">
+      <UniqueIdentifier>{7DBCFB61-E0FA-5185-8571-482D554B80ED}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pch_engine.h" />
+    <ClInclude Include="Engine\Api\EffectGraph.h">
+      <Filter>Engine\Api</Filter>
+    </ClInclude>
+    <ClInclude Include="Engine\Api\EffectGraphInternal.h">
+      <Filter>Engine\Api</Filter>
+    </ClInclude>
+    <ClInclude Include="Engine\Api\EffectGraphPlugin.h">
+      <Filter>Engine\Api</Filter>
+    </ClInclude>
+    <ClInclude Include="Engine\Api\EffectGraphVersion.h">
+      <Filter>Engine\Api</Filter>
+    </ClInclude>
+    <ClInclude Include="Engine\Api\EffectGraphImpl.h">
+      <Filter>Engine\Api</Filter>
+    </ClInclude>
+    <ClInclude Include="Engine\EngineBootstrap.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="Engine\Utf8.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\EffectEdge.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\VideoSourceStatus.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\GraphModel.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\ClockModel.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\PropertyWrite.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\NodeContracts.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\SourceKind.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\ParameterModel.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\ValueFormat.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\GraphEdits.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\EffectNode.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\NodeType.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Graph\PropertyValue.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\D3D11ComputeRunner.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\DisplayInfo.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\DisplayMonitor.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\DisplayProfile.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\GraphEvaluator.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\D2DHelpers.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\Evaluator\BindingResolver.h">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\Evaluator\ComputeDispatch.h">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\Evaluator\EvaluatorCore.h">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\Evaluator\InputPins.h">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\Evaluator\NodeRuntime.h">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\Evaluator\ParameterNodes.h">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\Evaluator\VariantSelector.h">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\FrameExecutor.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\EvaluatorOptions.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\GpuBindingPlan.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\DeviceStack.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\SourceRuntime.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\GpuTimer.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\IccProfileParser.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\MathExpression.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\PipelineFormat.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\CaptureNode.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\ImageCapture.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\ShaderLabParamsHlsl.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\IEngineComputeOutput.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\IEngineComputeTexture.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\WorkingSpaceSync.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\PixelReadback.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Rendering\PixelTrace.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\Performance.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\BytecodeCache.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\ShaderVariants.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\HlslScaffold.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\CustomComputeBridgeEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\CustomEffectBase.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\CustomComputeShaderEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\CustomPixelShaderEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\BuiltInEffects.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\GamutLutGeometry.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\EffectBlob.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\EffectRegistry.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\ImageLoader.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\PropertyMetadata.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\ShaderCompiler.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\ShaderIncludes.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\ShaderLabEffects.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\ColorMathCpu.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\LiveSource.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\SourceNodeFactory.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\SourceTextureUtil.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\NodeCatalog.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\EffectUpgrade.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\VideoFrameConverter.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\VideoFrameReader.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\VideoSeekModel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="Effects\VideoSourceProvider.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="pch_engine.cpp" />
+    <ClCompile Include="Graph\GraphModel.cpp">
+      <Filter>Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="Graph\ClockModel.cpp">
+      <Filter>Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="Graph\PropertyWrite.cpp">
+      <Filter>Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="Graph\NodeContracts.cpp">
+      <Filter>Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="Graph\SourceKind.cpp">
+      <Filter>Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="Graph\ParameterModel.cpp">
+      <Filter>Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="Graph\ValueFormat.cpp">
+      <Filter>Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="Graph\GraphEdits.cpp">
+      <Filter>Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\D3D11ComputeRunner.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\DisplayMonitor.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\GraphEvaluator.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\AnalysisReadback.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\BindingResolver.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\CachePolicy.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\ComputeDispatch.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\ComputeScheduler.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\CustomEffectNode.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\EffectFactory.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\EvaluatorCore.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\ParameterNodes.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\VariantSelector.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\GpuBindingPlan.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\DeviceStack.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\FrameExecutor.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\SourceRuntime.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\GpuTimer.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\IccProfileParser.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\CaptureNode.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\ImageCapture.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\WorkingSpaceSync.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\PixelReadback.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\PixelTrace.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\MathExpression.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\ColorMath.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\Performance.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\BytecodeCache.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\ShaderVariants.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\HlslScaffold.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\CustomComputeBridgeEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\CustomEffectBase.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\CustomComputeShaderEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\CustomPixelShaderEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\BuiltInEffectHooks.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\BuiltInEffects.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\EffectBlob.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\EffectRegistry.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\ImageLoader.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\ShaderCompiler.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\ShaderIncludes.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\ShaderLabParamsHlsl.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\ShaderLabEffects.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\UserEffectLibrary.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\LiveSource.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\SourceNodeFactory.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\SourceTextureUtil.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\NodeCatalog.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\EffectUpgrade.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\VideoFrameConverter.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\VideoFrameReader.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\VideoSeekModel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Effects\VideoSourceProvider.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Engine\Api\EffectGraphContext.cpp">
+      <Filter>Engine\Api</Filter>
+    </ClCompile>
+    <ClCompile Include="Engine\Api\EffectGraphPlugin.cpp">
+      <Filter>Engine\Api</Filter>
+    </ClCompile>
+    <ClCompile Include="Engine\Api\EffectGraphNode.cpp">
+      <Filter>Engine\Api</Filter>
+    </ClCompile>
+    <ClCompile Include="Engine\EngineBootstrap.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- C# bindings for EffectGraph.dll. Packed by packaging/Pack.ps1, which
+       passes Version and EffectGraphBlobDir (the generated built-in blobs). -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>EffectGraph</RootNamespace>
+    <!-- Not EffectGraph.dll: that is the native library, and a build for one
+         runtime puts both in the same folder. -->
+    <AssemblyName>EffectGraph.Interop</AssemblyName>
+    <Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
+    <PackageId>EffectGraph</PackageId>
+    <Authors>David Spruill</Authors>
+    <PackageLicenseExpression>MIT-0</PackageLicenseExpression>
+    <Description>C# bindings for EffectGraph, ShaderLab's HDR effect library and graph evaluator for D3D11 and Direct2D programs: the COM interfaces, the C entry points, and every built-in effect embedded, registered by name. Depends on EffectGraph.Native for EffectGraph.dll (x64, ARM64).</Description>
+    <PackageProjectUrl>https://github.com/Spruill-1/EffectGraph</PackageProjectUrl>
+    <PackageTags>direct2d d3d11 hdr shaders effects interop</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="EffectGraph.Native" Version="$(Version)" />
+    <None Include="README.md" Pack="true" PackagePath="" />
+    <EmbeddedResource Include="$(EffectGraphBlobDir)*.effectblob" Condition="'$(EffectGraphBlobDir)' != ''"
+                      LogicalName="%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

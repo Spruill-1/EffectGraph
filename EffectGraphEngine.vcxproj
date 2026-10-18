@@ -1,0 +1,270 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7705\build\Microsoft.Windows.SDK.BuildTools.props" Condition="Exists('packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7705\build\Microsoft.Windows.SDK.BuildTools.props')" />
+  <Import Project="packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props" Condition="Exists('packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props')" />
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A7A1E0F1-665C-4D06-9AC7-6D6B6A0D0F01}</ProjectGuid>
+    <ProjectName>EffectGraphEngine</ProjectName>
+    <RootNamespace>EffectGraphEngine</RootNamespace>
+    <TargetName>EffectGraphEngine</TargetName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.22621.0</WindowsTargetPlatformMinVersion>
+    <Keyword>Win32Proj</Keyword>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|ARM64"><Configuration>Debug</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64"><Configuration>Release</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &gt;= '18.0'">v145</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &lt; '18.0'">v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &gt;= '18.0'">v145</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &lt; '18.0'">v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &gt;= '18.0'">v145</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &lt; '18.0'">v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &gt;= '18.0'">v145</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &lt; '18.0'">v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <!-- The EffectGraph.Engine package's build (packaging/Pack.ps1): no /GL, since
+       an LTCG library links only with the exact compiler that built it. -->
+  <PropertyGroup Condition="'$(EffectGraphPackageBuild)' == 'true'">
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)$(Platform)\$(Configuration)\EffectGraphEngine\</OutDir>
+    <IntDir>$(ProjectDir)$(Platform)\$(Configuration)\EffectGraphEngine\obj\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(EffectGraphPackageBuild)' == 'true'">
+    <OutDir>$(ProjectDir)$(Platform)\$(Configuration)\EffectGraphEngine.Package\</OutDir>
+    <IntDir>$(ProjectDir)$(Platform)\$(Configuration)\EffectGraphEngine.Package\obj\</IntDir>
+  </PropertyGroup>
+  <!-- Debug information inside the objects, so a consumer's linker finds it. -->
+  <ItemDefinitionGroup Condition="'$(EffectGraphPackageBuild)' == 'true'">
+    <ClCompile>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch_engine.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)pch_engine.pch</PrecompiledHeaderOutputFile>
+      <WarningLevel>Level4</WarningLevel>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <DisableSpecificWarnings>4251;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <!-- C4715: falling off the end of a value-returning function is undefined behavior. -->
+      <TreatSpecificWarningsAsErrors>4715;%(TreatSpecificWarningsAsErrors)</TreatSpecificWarningsAsErrors>
+      <AdditionalOptions>%(AdditionalOptions) /bigobj /utf-8</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <PreprocessorDefinitions>EFFECTGRAPH_STATIC;WIN32;_WINDOWS;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <PreprocessorDefinitions>EFFECTGRAPH_STATIC;WIN32;_WINDOWS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="Graph\VideoSourceStatus.h" />
+    <ClInclude Include="pch_engine.h" />
+    <ClInclude Include="Engine\Api\EffectGraph.h" />
+    <ClInclude Include="Engine\Api\EffectGraphInternal.h" />
+    <ClInclude Include="Engine\Api\EffectGraphImpl.h" />
+    <ClInclude Include="Engine\Api\EffectGraphPlugin.h" />
+    <ClInclude Include="Engine\Api\EffectGraphVersion.h" />
+    <ClInclude Include="Engine\EngineBootstrap.h" />
+    <ClInclude Include="Engine\Utf8.h" />
+    <ClInclude Include="Graph\EffectEdge.h" />
+    <ClInclude Include="Graph\GraphModel.h" />
+    <ClInclude Include="Graph\ClockModel.h" />
+    <ClInclude Include="Graph\PropertyWrite.h" />
+    <ClInclude Include="Graph\NodeContracts.h" />
+    <ClInclude Include="Graph\SourceKind.h" />
+    <ClInclude Include="Graph\ParameterModel.h" />
+    <ClInclude Include="Graph\ValueFormat.h" />
+    <ClInclude Include="Graph\GraphEdits.h" />
+    <ClInclude Include="Graph\EffectNode.h" />
+    <ClInclude Include="Graph\NodeType.h" />
+    <ClInclude Include="Graph\PropertyValue.h" />
+    <ClInclude Include="Rendering\D3D11ComputeRunner.h" />
+    <ClInclude Include="Rendering\DisplayInfo.h" />
+    <ClInclude Include="Rendering\DisplayMonitor.h" />
+    <ClInclude Include="Rendering\DisplayProfile.h" />
+    <ClInclude Include="Rendering\GraphEvaluator.h" />
+    <ClInclude Include="Rendering\D2DHelpers.h" />
+    <ClInclude Include="Rendering\Evaluator\BindingResolver.h" />
+    <ClInclude Include="Rendering\Evaluator\ComputeDispatch.h" />
+    <ClInclude Include="Rendering\Evaluator\EvaluatorCore.h" />
+    <ClInclude Include="Rendering\Evaluator\InputPins.h" />
+    <ClInclude Include="Rendering\Evaluator\NodeRuntime.h" />
+    <ClInclude Include="Rendering\Evaluator\ParameterNodes.h" />
+    <ClInclude Include="Rendering\Evaluator\VariantSelector.h" />
+    <ClInclude Include="Rendering\FrameExecutor.h" />
+    <ClInclude Include="Rendering\EvaluatorOptions.h" />
+    <ClInclude Include="Rendering\GpuBindingPlan.h" />
+    <ClInclude Include="Rendering\DeviceStack.h" />
+    <ClInclude Include="Rendering\SourceRuntime.h" />
+    <ClInclude Include="Rendering\GpuTimer.h" />
+    <ClInclude Include="Rendering\IccProfileParser.h" />
+    <ClInclude Include="Rendering\MathExpression.h" />
+    <ClInclude Include="Rendering\PipelineFormat.h" />
+    <ClInclude Include="Rendering\CaptureNode.h" />
+    <ClInclude Include="Rendering\ImageCapture.h" />
+    <ClInclude Include="Effects\ShaderLabParamsHlsl.h" />
+    <ClInclude Include="Effects\IEngineComputeOutput.h" />
+    <ClInclude Include="Effects\IEngineComputeTexture.h" />
+    <ClInclude Include="Rendering\WorkingSpaceSync.h" />
+    <ClInclude Include="Rendering\PixelReadback.h" />
+    <ClInclude Include="Rendering\PixelTrace.h" />
+    <ClInclude Include="Effects\Performance.h" />
+    <ClInclude Include="Effects\BytecodeCache.h" />
+    <ClInclude Include="Effects\ShaderVariants.h" />
+    <ClInclude Include="Effects\HlslScaffold.h" />
+    <ClInclude Include="Effects\CustomComputeBridgeEffect.h" />
+    <ClInclude Include="Effects\CustomEffectBase.h" />
+    <ClInclude Include="Effects\CustomComputeShaderEffect.h" />
+    <ClInclude Include="Effects\CustomPixelShaderEffect.h" />
+    <ClInclude Include="Effects\BuiltInEffects.h" />
+    <ClInclude Include="Effects\EffectBlob.h" />
+    <ClInclude Include="Effects\GamutLutGeometry.h" />
+    <ClInclude Include="Effects\EffectRegistry.h" />
+    <ClInclude Include="Effects\ImageLoader.h" />
+    <ClInclude Include="Effects\PropertyMetadata.h" />
+    <ClInclude Include="Effects\ShaderCompiler.h" />
+    <ClInclude Include="Effects\ShaderIncludes.h" />
+    <ClInclude Include="Effects\ShaderLabEffects.h" />
+    <ClInclude Include="Effects\ColorMathCpu.h" />
+    <ClInclude Include="Effects\LiveSource.h" />
+    <ClInclude Include="Effects\SourceNodeFactory.h" />
+    <ClInclude Include="Effects\SourceTextureUtil.h" />
+    <ClInclude Include="Effects\NodeCatalog.h" />
+    <ClInclude Include="Effects\EffectUpgrade.h" />
+    <ClInclude Include="Effects\VideoFrameConverter.h" />
+    <ClInclude Include="Effects\VideoFrameReader.h" />
+    <ClInclude Include="Effects\VideoSeekModel.h" />
+    <ClInclude Include="Effects\VideoSourceProvider.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="pch_engine.cpp">
+      <PrecompiledHeader>Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="Graph\GraphModel.cpp" />
+    <ClCompile Include="Graph\ClockModel.cpp" />
+    <ClCompile Include="Graph\PropertyWrite.cpp" />
+    <ClCompile Include="Graph\NodeContracts.cpp" />
+    <ClCompile Include="Graph\SourceKind.cpp" />
+    <ClCompile Include="Graph\ParameterModel.cpp" />
+    <ClCompile Include="Graph\ValueFormat.cpp" />
+    <ClCompile Include="Graph\GraphEdits.cpp" />
+    <ClCompile Include="Rendering\D3D11ComputeRunner.cpp" />
+    <ClCompile Include="Rendering\DisplayMonitor.cpp" />
+    <ClCompile Include="Rendering\GraphEvaluator.cpp" />
+    <ClCompile Include="Rendering\Evaluator\AnalysisReadback.cpp" />
+    <ClCompile Include="Rendering\Evaluator\BindingResolver.cpp" />
+    <ClCompile Include="Rendering\Evaluator\CachePolicy.cpp" />
+    <ClCompile Include="Rendering\Evaluator\ComputeDispatch.cpp" />
+    <ClCompile Include="Rendering\Evaluator\ComputeScheduler.cpp" />
+    <ClCompile Include="Rendering\Evaluator\CustomEffectNode.cpp" />
+    <ClCompile Include="Rendering\Evaluator\EffectFactory.cpp" />
+    <ClCompile Include="Rendering\Evaluator\EvaluatorCore.cpp" />
+    <ClCompile Include="Rendering\Evaluator\ParameterNodes.cpp" />
+    <ClCompile Include="Rendering\Evaluator\VariantSelector.cpp" />
+    <ClCompile Include="Rendering\GpuBindingPlan.cpp" />
+    <ClCompile Include="Rendering\DeviceStack.cpp" />
+    <ClCompile Include="Rendering\FrameExecutor.cpp" />
+    <ClCompile Include="Rendering\SourceRuntime.cpp" />
+    <ClCompile Include="Rendering\GpuTimer.cpp" />
+    <ClCompile Include="Rendering\IccProfileParser.cpp" />
+    <ClCompile Include="Rendering\CaptureNode.cpp" />
+    <ClCompile Include="Rendering\ImageCapture.cpp" />
+    <ClCompile Include="Rendering\WorkingSpaceSync.cpp" />
+    <ClCompile Include="Rendering\PixelReadback.cpp" />
+    <ClCompile Include="Rendering\PixelTrace.cpp" />
+    <ClCompile Include="Rendering\MathExpression.cpp" />
+    <ClCompile Include="Effects\ColorMath.cpp" />
+    <ClCompile Include="Effects\Performance.cpp" />
+    <ClCompile Include="Effects\BytecodeCache.cpp" />
+    <ClCompile Include="Effects\ShaderVariants.cpp" />
+    <ClCompile Include="Effects\HlslScaffold.cpp" />
+    <ClCompile Include="Effects\CustomComputeBridgeEffect.cpp" />
+    <ClCompile Include="Effects\CustomEffectBase.cpp" />
+    <ClCompile Include="Effects\CustomComputeShaderEffect.cpp" />
+    <ClCompile Include="Effects\CustomPixelShaderEffect.cpp" />
+    <ClCompile Include="Effects\BuiltInEffectHooks.cpp" />
+    <ClCompile Include="Effects\BuiltInEffects.cpp" />
+    <ClCompile Include="Effects\EffectBlob.cpp" />
+    <ClCompile Include="Effects\EffectRegistry.cpp" />
+    <ClCompile Include="Effects\ImageLoader.cpp" />
+    <ClCompile Include="Effects\ShaderCompiler.cpp" />
+    <ClCompile Include="Effects\ShaderIncludes.cpp" />
+    <ClCompile Include="Effects\ShaderLabParamsHlsl.cpp" />
+    <ClCompile Include="Effects\ShaderLabEffects.cpp" />
+    <ClCompile Include="Effects\UserEffectLibrary.cpp" />
+    <ClCompile Include="Effects\LiveSource.cpp" />
+    <ClCompile Include="Effects\SourceNodeFactory.cpp" />
+    <ClCompile Include="Effects\SourceTextureUtil.cpp" />
+    <ClCompile Include="Effects\NodeCatalog.cpp" />
+    <ClCompile Include="Effects\EffectUpgrade.cpp" />
+    <ClCompile Include="Effects\VideoFrameConverter.cpp" />
+    <ClCompile Include="Effects\VideoFrameReader.cpp" />
+    <ClCompile Include="Effects\VideoSeekModel.cpp" />
+    <ClCompile Include="Effects\VideoSourceProvider.cpp" />
+    <ClCompile Include="Engine\Api\EffectGraphContext.cpp" />
+    <ClCompile Include="Engine\Api\EffectGraphNode.cpp" />
+    <ClCompile Include="Engine\Api\EffectGraphPlugin.cpp" />
+    <ClCompile Include="Engine\EngineBootstrap.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets" Condition="Exists('packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets')" />
+    <Import Project="packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7705\build\Microsoft.Windows.SDK.BuildTools.targets" Condition="Exists('packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7705\build\Microsoft.Windows.SDK.BuildTools.targets')" />
+  </ImportGroup>
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them. For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props'))" />
+    <Error Condition="!Exists('packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets'))" />
+    <Error Condition="!Exists('packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7705\build\Microsoft.Windows.SDK.BuildTools.props')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7705\build\Microsoft.Windows.SDK.BuildTools.props'))" />
+    <Error Condition="!Exists('packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7705\build\Microsoft.Windows.SDK.BuildTools.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7705\build\Microsoft.Windows.SDK.BuildTools.targets'))" />
+  </Target>
+</Project>

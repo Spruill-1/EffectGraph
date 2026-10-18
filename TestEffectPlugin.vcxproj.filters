@@ -1,0 +1,21 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Engine\Api">
+      <UniqueIdentifier>{D0020199-8F9D-4D16-A15D-499BDC6BB782}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Tests\TestPlugin">
+      <UniqueIdentifier>{4A7C1E93-6B2D-4F80-9C15-3E8D7B0A2F64}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Engine\Api\EffectGraph.h"><Filter>Engine\Api</Filter></ClInclude>
+    <ClInclude Include="Engine\Api\EffectGraphPlugin.h"><Filter>Engine\Api</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Tests\TestPlugin\TestEffectPlugin.cpp"><Filter>Tests\TestPlugin</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Tests\TestPlugin\TestPluginGain.json"><Filter>Tests\TestPlugin</Filter></None>
+  </ItemGroup>
+</Project>

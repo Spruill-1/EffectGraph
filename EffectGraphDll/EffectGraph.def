@@ -1,0 +1,9 @@
+LIBRARY EffectGraph
+EXPORTS
+    EffectGraphCreateContext
+    EffectGraphRegisterEffect
+    EffectGraphRegisterEffects
+    EffectGraphAddEffects
+    EffectGraphLoadEffects
+    EffectGraphLoadPlugin
+    EffectGraphShutdown

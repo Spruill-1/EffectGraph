@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Builds effect blobs at a consuming project's build: each EffectGraphEffect
+  item (an effect saved by ShaderLab's Effect Designer) becomes a header
+  <Filename>.effect.h holding the blob as a byte array, before C++ compiles.
+
+  In the consuming .vcxproj, after Microsoft.Cpp.targets:
+    <Import Project="path\to\EffectGraph\build\EffectGraph.targets" />
+    <ItemGroup>
+      <EffectGraphEffect Include="Effects\ScreenshotToneMap.json"
+                         GpuBound="SourcePeakNits;WhiteErrorBudget" />
+    </ItemGroup>
+  then:
+    #include "ScreenshotToneMap.effect.h"
+    EffectGraphRegisterEffects(&cScreenshotToneMapEffect);
+  Every build is compiled in by default. Define EFFECTGRAPH_COMPILE_ONLY_REFERENCED
+  and the macros the header lists, before including it, to keep only what you use.
+
+  Metadata: GpuBound lists the parameters the program binds to an analysis
+  field (each combination gets a GPU-served build); Symbol overrides the
+  array's name. Set EffectGraphCompilePath to use a tool built elsewhere.
+  Compiled builds are kept in $(EffectGraphGeneratedDir)cache, so a rebuild
+  compiles only the builds whose source changed.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <EffectGraphCompilePath Condition="'$(EffectGraphCompilePath)' == ''">$(MSBuildThisFileDirectory)..\$(Platform)\$(Configuration)\EffectGraphCompile\EffectGraphCompile.exe</EffectGraphCompilePath>
+    <EffectGraphGeneratedDir Condition="'$(EffectGraphGeneratedDir)' == ''">$(IntDir)EffectGraph\</EffectGraphGeneratedDir>
+    <!-- Where EffectGraph.h is: the repository's, or a package's. -->
+    <EffectGraphApiIncludeDir Condition="'$(EffectGraphApiIncludeDir)' == ''">$(MSBuildThisFileDirectory)..\Engine\Api</EffectGraphApiIncludeDir>
+  </PropertyGroup>
+
+  <!-- Always runs, so the include path is there even when the blobs are up to date. -->
+  <Target Name="EffectGraphIncludePath" BeforeTargets="ClCompile" Condition="'@(EffectGraphEffect)' != ''">
+    <ItemGroup>
+      <ClCompile>
+        <AdditionalIncludeDirectories>$(EffectGraphGeneratedDir);$(EffectGraphApiIncludeDir);%(ClCompile.AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      </ClCompile>
+    </ItemGroup>
+  </Target>
+
+  <!-- The tool, which links the engine, is an input: a new engine may bind
+       shaders differently, and its blobs must be rebuilt to register. -->
+  <Target Name="EffectGraphCompileEffects" BeforeTargets="ClCompile" DependsOnTargets="EffectGraphIncludePath"
+          Condition="'@(EffectGraphEffect)' != ''"
+          Inputs="@(EffectGraphEffect);$(EffectGraphCompilePath)"
+          Outputs="@(EffectGraphEffect->'$(EffectGraphGeneratedDir)%(Filename).effect.h')">
+    <Error Condition="!Exists('$(EffectGraphCompilePath)')"
+           Text="EffectGraphCompile was not found at $(EffectGraphCompilePath). Build EffectGraph's EffectGraphCompile project for $(Platform) $(Configuration), or set EffectGraphCompilePath." />
+    <MakeDir Directories="$(EffectGraphGeneratedDir)" />
+    <Exec Command="&quot;$(EffectGraphCompilePath)&quot; &quot;%(EffectGraphEffect.FullPath)&quot; --header &quot;$(EffectGraphGeneratedDir)%(EffectGraphEffect.Filename).effect.h&quot; --gpu-bound &quot;$([System.String]::Copy('%(EffectGraphEffect.GpuBound)').Replace(';', ','))&quot; --symbol &quot;%(EffectGraphEffect.Symbol)&quot; --cache &quot;$(EffectGraphGeneratedDir)cache&quot;" />
+  </Target>
+</Project>

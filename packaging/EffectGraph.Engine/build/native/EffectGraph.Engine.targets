@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EffectGraph.Engine for C++ projects: the engine's headers and the static
+  library for the project's platform and configuration, with EFFECTGRAPH_STATIC
+  defined. Include engine headers from the include root ("Graph/GraphModel.h");
+  the public API and every built-in effect header are reachable by bare name
+  ("EffectGraph.h", "EffectGraphBuiltIns.h").
+
+  The library needs C++/WinRT in the consuming project (Microsoft.Windows.CppWinRT)
+  and C++20. Its system libraries (d3d11, d2d1, ...) are linked through
+  #pragma comment in its objects. Set EffectGraphEngineHeadersOnly to true to
+  compile against the headers without linking the library.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <EffectGraphEngineRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\'))</EffectGraphEngineRoot>
+    <EffectGraphEngineInclude>$(EffectGraphEngineRoot)build\native\include\</EffectGraphEngineInclude>
+    <EffectGraphEngineConfig Condition="'$(UseDebugLibraries)' == 'true'">Debug</EffectGraphEngineConfig>
+    <EffectGraphEngineConfig Condition="'$(UseDebugLibraries)' != 'true'">Release</EffectGraphEngineConfig>
+    <EffectGraphEngineLib>$(EffectGraphEngineRoot)build\native\lib\$(Platform)\$(EffectGraphEngineConfig)\EffectGraphEngine.lib</EffectGraphEngineLib>
+  </PropertyGroup>
+
+  <Target Name="EffectGraphEnginePlatformCheck" BeforeTargets="ClCompile" Condition="!Exists('$(EffectGraphEngineLib)')">
+    <Error Text="EffectGraph.Engine has x64 and ARM64 builds; this project builds for '$(Platform)'." />
+  </Target>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(EffectGraphEngineInclude);$(EffectGraphEngineInclude)Engine\Api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>EFFECTGRAPH_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(EffectGraphEngineHeadersOnly)' != 'true'">
+    <Link>
+      <AdditionalDependencies>$(EffectGraphEngineLib);%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

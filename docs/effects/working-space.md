@@ -1,0 +1,13 @@
+# Working Space Integration
+
+The active display profile (live OS-reported caps or any simulated preset / ICC the user has applied) is exposed to graphs through a single first-class node: **`Working Space`** (Parameter category). Effects that operate in a specific color space pull from it via the property-binding system.
+
+- **Single source of truth**: The Working Space node's 14 typed analysis output fields mirror the active profile — `ActiveColorMode` (0=SDR, 1=WCG/ACM, 2=HDR — maps 1:1 onto WinRT `AdvancedColorKind`), `HdrSupported`, `HdrUserEnabled`, `WcgSupported`, `WcgUserEnabled`, `IsSimulated`, `SdrWhiteNits`, `PeakNits`, `MinNits`, `MaxFullFrameNits`, plus the four CIE-xy primaries `RedPrimary` / `GreenPrimary` / `BluePrimary` / `WhitePoint` (each Float2). For the live display, `*Supported` reflects `IsAdvancedColorKindAvailable` (achievable on this display) while `*UserEnabled` mirrors the ACTIVE kind — `AdvancedColorInfo` has no separate user-toggle probe, so "supported but not user-enabled" reads as `HdrSupported=1, HdrUserEnabled=0`.
+- **Updated by the render worker once per tick** (`UpdateWorkingSpaceNodes` under the graph lock — the worker is the single graph writer), which reads `ActiveProfile()` and marks the node dirty only when a field moved beyond its dead-band (1 nit on luminance fields, 0.0005 on chromaticity — adaptive-color displays jitter sub-nit at sensor rate, and without the dead-band every drift re-evaluated all binding consumers). That node-dirty is the sole propagation path to binding consumers; nothing sets `MarkAllDirty` on display changes. `SdrWhiteNits` tracks the Windows "SDR content brightness" slider live (slider steps are multi-nit).
+- **Bind, don't hide**: Effects that need to know the working-space primaries or peak nits expose them as bindable `Float2` / `Float` parameters (typically a `Custom` enum mode that gates them via `visibleWhen`, plus a few static convenience modes like `sRGB` / `BT.2020`). Wire those parameters from the Working Space node to follow the live profile, or set them by hand for strict static analysis. There is no "follow the working space" toggle anymore — wiring the binding **is** the toggle.
+- **No legacy `_hidden` filter**: properties ending in `_hidden` used to be host-managed cbuffer slots filtered from the UI. Decision #51 stopped writing them; a Phase-0 cleanup deleted the filter sites. Old graphs still load — the stale keys sit in memory inert. Cross-version graph compatibility is not promised right now.
+
+
+---
+
+Back to [docs/](../README.md) • [Repo root](../../README.md)

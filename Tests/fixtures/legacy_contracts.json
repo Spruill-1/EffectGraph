@@ -1,0 +1,138 @@
+{
+  "formatVersion": 2,
+  "appVersion": "1.9.0",
+  "nodes": [
+    {
+      "id": 1, "name": "Clock", "type": "PixelShader", "position": [0, 0],
+      "properties": [
+        { "name": "StartTime", "type": "float", "value": 0 },
+        { "name": "StopTime", "type": "float", "value": 10 }
+      ],
+      "inputPins": [], "outputPins": [],
+      "customEffect": {
+        "shaderType": 0, "hlslSource": "", "inputNames": [], "parameters": [],
+        "threadGroupX": 8, "threadGroupY": 8, "threadGroupZ": 1,
+        "analysisOutputType": 3, "analysisOutputSize": 256,
+        "analysisFields": [ { "name": "Time", "type": "float" }, { "name": "Progress", "type": "float" } ],
+        "shaderLabEffectId": "Clock", "shaderLabEffectVersion": 2
+      }
+    },
+    {
+      "id": 2, "name": "Numeric Expression", "type": "PixelShader", "position": [0, 100],
+      "properties": [
+        { "name": "A", "type": "float", "value": 2 },
+        { "name": "Expression", "type": "string", "value": "A * 3" }
+      ],
+      "inputPins": [], "outputPins": [],
+      "customEffect": {
+        "shaderType": 0, "hlslSource": "", "inputNames": [],
+        "parameters": [ { "name": "A", "typeName": "float", "minValue": 0, "maxValue": 1, "step": 0.01 } ],
+        "threadGroupX": 8, "threadGroupY": 8, "threadGroupZ": 1,
+        "analysisOutputType": 3, "analysisOutputSize": 256,
+        "analysisFields": [ { "name": "Result", "type": "float" } ],
+        "shaderLabEffectId": "Math Expression", "shaderLabEffectVersion": 1
+      }
+    },
+    {
+      "id": 3, "name": "Working Space", "type": "PixelShader", "position": [0, 200],
+      "properties": [ { "name": "PeakNits", "type": "float", "value": 1000 } ],
+      "inputPins": [], "outputPins": [],
+      "customEffect": {
+        "shaderType": 0, "hlslSource": "", "inputNames": [], "parameters": [],
+        "threadGroupX": 8, "threadGroupY": 8, "threadGroupZ": 1,
+        "analysisOutputType": 3, "analysisOutputSize": 256,
+        "analysisFields": [ { "name": "PeakNits", "type": "float" } ],
+        "shaderLabEffectId": "Working Space", "shaderLabEffectVersion": 1
+      }
+    },
+    {
+      "id": 4, "name": "Picture", "type": "Source", "position": [0, 300],
+      "properties": [ { "name": "shaderPath", "type": "string", "value": "C:\\media\\picture.png" } ],
+      "shaderPath": "C:\\media\\picture.png",
+      "inputPins": [], "outputPins": [ { "name": "Image", "index": 0 } ]
+    },
+    {
+      "id": 5, "name": "Clip", "type": "Source", "position": [0, 400],
+      "properties": [
+        { "name": "IsVideo", "type": "bool", "value": true },
+        { "name": "shaderPath", "type": "string", "value": "C:\\media\\newer.mp4" }
+      ],
+      "shaderPath": "C:\\media\\older.mp4",
+      "inputPins": [], "outputPins": [ { "name": "Frame", "index": 0 } ]
+    },
+    {
+      "id": 6, "name": "Plate", "type": "PixelShader", "position": [200, 0],
+      "properties": [
+        { "name": "Frequency", "type": "float", "value": 1 },
+        { "name": "PlateSize", "type": "float", "value": 300 }
+      ],
+      "inputPins": [], "outputPins": [ { "name": "Output", "index": 0 } ],
+      "customEffect": {
+        "shaderType": 0, "hlslSource": "float4 main() : SV_Target { return 0; }", "inputNames": [], "parameters": [],
+        "threadGroupX": 8, "threadGroupY": 8, "threadGroupZ": 1,
+        "analysisOutputType": 0, "analysisOutputSize": 256
+      }
+    },
+    {
+      "id": 7, "name": "Checker", "type": "PixelShader", "position": [200, 100],
+      "properties": [ { "name": "PatchSize", "type": "float", "value": 50 } ],
+      "inputPins": [], "outputPins": [ { "name": "Output", "index": 0 } ],
+      "customEffect": {
+        "shaderType": 0, "hlslSource": "float4 main() : SV_Target { return 0; }", "inputNames": [], "parameters": [],
+        "threadGroupX": 8, "threadGroupY": 8, "threadGroupZ": 1,
+        "analysisOutputType": 0, "analysisOutputSize": 256
+      }
+    },
+    {
+      "id": 8, "name": "Split", "type": "PixelShader", "position": [200, 200],
+      "properties": [
+        { "name": "InputMask", "type": "float", "value": 3 },
+        { "name": "OutputW", "type": "float", "value": 1 },
+        { "name": "Split", "type": "float", "value": 0.5 }
+      ],
+      "propertyBindings": {
+        "Split": { "sources": [ { "nodeId": 98, "field": "Result", "index": 0, "comp": 0 } ] }
+      },
+      "inputPins": [ { "name": "I0", "index": 0 }, { "name": "I1", "index": 1 } ],
+      "outputPins": [ { "name": "Output", "index": 0 } ],
+      "customEffect": {
+        "shaderType": 0, "hlslSource": "float4 main() : SV_Target { return 0; }", "inputNames": [ "A", "B" ], "parameters": [],
+        "threadGroupX": 8, "threadGroupY": 8, "threadGroupZ": 1,
+        "analysisOutputType": 0, "analysisOutputSize": 256
+      }
+    },
+    {
+      "id": 9, "name": "Scatter", "type": "ComputeShader", "position": [400, 0],
+      "properties": [ { "name": "DiagramSize", "type": "float", "value": 512 } ],
+      "inputPins": [ { "name": "I0", "index": 0 } ], "outputPins": [ { "name": "Output", "index": 0 } ],
+      "customEffect": {
+        "shaderType": 2, "hlslSource": "[numthreads(32, 32, 1)] void main() {}", "inputNames": [ "Source" ],
+        "parameters": [ { "name": "DiagramSize", "typeName": "float", "minValue": 64, "maxValue": 4096, "step": 64 } ],
+        "threadGroupX": 32, "threadGroupY": 32, "threadGroupZ": 1,
+        "analysisOutputType": 0, "analysisOutputSize": 256
+      }
+    },
+    {
+      "id": 10, "name": "Tiled", "type": "ComputeShader", "position": [400, 100],
+      "properties": [],
+      "inputPins": [ { "name": "I0", "index": 0 } ], "outputPins": [ { "name": "Output", "index": 0 } ],
+      "customEffect": {
+        "shaderType": 2, "hlslSource": "[numthreads(8, 8, 1)] void main() {}", "inputNames": [ "Source" ], "parameters": [],
+        "threadGroupX": 8, "threadGroupY": 8, "threadGroupZ": 1,
+        "analysisOutputType": 0, "analysisOutputSize": 256
+      }
+    },
+    {
+      "id": 11, "name": "Output", "type": "Output", "position": [600, 0],
+      "properties": [],
+      "inputPins": [ { "name": "Input", "index": 0 } ], "outputPins": []
+    }
+  ],
+  "edges": [
+    { "sourceNodeId": 4, "sourcePin": 0, "destNodeId": 8, "destPin": 0 },
+    { "sourceNodeId": 6, "sourcePin": 0, "destNodeId": 8, "destPin": 1 },
+    { "sourceNodeId": 8, "sourcePin": 0, "destNodeId": 11, "destPin": 0 },
+    { "sourceNodeId": 99, "sourcePin": 0, "destNodeId": 10, "destPin": 0 }
+  ],
+  "nextId": 5
+}

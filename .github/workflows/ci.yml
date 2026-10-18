@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  # release.yml runs this first: a release is built only from a commit that passes it.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
+
+# Actions are pinned to commits; the comment names the release.
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.configuration }} | x64)
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@fd55a6f3b34392fa83fde1454582407d8c714123 # v4.0
+
+      - name: NuGet restore
+        run: nuget restore EffectGraph.slnx -SolutionDirectory .
+
+      - name: Build
+        run: msbuild EffectGraph.slnx /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /m /nologo /v:minimal
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          & ".\x64\${{ matrix.configuration }}\EffectGraphTests\EffectGraphTests.exe" --adapter warp
+          if ($LASTEXITCODE -ne 0) { Write-Error "EffectGraphTests reported $LASTEXITCODE failure(s)"; exit $LASTEXITCODE }
+
+  pack:
+    name: Pack (x64 + ARM64, v143) and C# smoke
+    runs-on: windows-2025
+    # release.yml packs for itself.
+    if: github.event_name != 'workflow_call'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@fd55a6f3b34392fa83fde1454582407d8c714123 # v4.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: NuGet restore
+        run: nuget restore EffectGraph.slnx -SolutionDirectory .
+
+      - name: Pack
+        shell: pwsh
+        run: pwsh -File packaging\Pack.ps1 -PlatformToolset v143
+
+      - name: Upload packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: packaging/out/*.nupkg
+
+  native-arm64:
+    name: Native ARM64 build & test
+    runs-on: windows-11-arm
+    # The x64 jobs cross-compile ARM64, so the ARM64-host toolset trap
+    # (docs/development/build.md) never shows there; this job guards it.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@fd55a6f3b34392fa83fde1454582407d8c714123 # v4.0
+
+      - name: NuGet restore
+        run: nuget restore EffectGraph.slnx -SolutionDirectory .
+
+      - name: Resolve the ARM64-native MSBuild
+        shell: pwsh
+        # Not microsoft/setup-msbuild: its MSBuild.exe is 32-bit, and under
+        # emulation toolset selection falls through to a 32-bit compiler that
+        # runs out of address space (C3859 / C1076).
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $root = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+          if (-not $root) { Write-Error "vswhere found no VS installation"; exit 1 }
+          $msbuild = Join-Path $root 'MSBuild\Current\Bin\arm64\MSBuild.exe'
+          if (-not (Test-Path $msbuild)) { Write-Error "ARM64-native MSBuild not found at $msbuild"; exit 1 }
+          "MSBUILD_ARM64=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build (Debug | ARM64)
+        shell: pwsh
+        run: |
+          & $env:MSBUILD_ARM64 EffectGraphTests.vcxproj /p:Configuration=Debug /p:Platform=ARM64 /m /nologo /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          & ".\ARM64\Debug\EffectGraphTests\EffectGraphTests.exe" --adapter warp
+          if ($LASTEXITCODE -ne 0) { Write-Error "EffectGraphTests reported $LASTEXITCODE failure(s)"; exit $LASTEXITCODE }

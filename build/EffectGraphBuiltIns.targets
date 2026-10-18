@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Generates the headers for EffectGraph's built-in shader effects before C++
+  compiles: one <name>.effect.h per effect, each registering itself at startup,
+  and EffectGraphBuiltIns.h including them all. A program gets a built-in by
+  including its header. EffectGraphCompile writes them from the BuiltInEffects
+  library with every build in, keeping compiled builds in a cache folder so a
+  rebuild compiles only what changed.
+
+  Import after Microsoft.Cpp.targets. The headers are platform-independent,
+  so where this machine cannot run the target platform's tool (ARM64 built on
+  x64), the x64 tool is built and used.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <EffectGraphRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\'))</EffectGraphRoot>
+    <EffectGraphToolPlatform>$(Platform)</EffectGraphToolPlatform>
+    <EffectGraphToolPlatform Condition="'$(Platform)' == 'ARM64' and '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' != 'Arm64'">x64</EffectGraphToolPlatform>
+    <EffectGraphToolDir>$(EffectGraphRoot)$(EffectGraphToolPlatform)\$(Configuration)\</EffectGraphToolDir>
+    <EffectGraphBuiltInsDir>$(EffectGraphRoot)$(Platform)\$(Configuration)\EffectGraphBuiltIns\</EffectGraphBuiltInsDir>
+  </PropertyGroup>
+
+  <!-- The tool for this platform builds in the normal project order. -->
+  <ItemGroup Condition="'$(EffectGraphToolPlatform)' == '$(Platform)'">
+    <ProjectReference Include="$(EffectGraphRoot)EffectGraphCompile.vcxproj">
+      <Project>{05BD6911-0AEA-4FD9-AAF6-95E061D5494E}</Project>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- Another platform's tool is built here, before it is needed. -->
+  <Target Name="EffectGraphBuildHostTool" BeforeTargets="EffectGraphBuiltIns"
+          Condition="'$(EffectGraphToolPlatform)' != '$(Platform)'">
+    <MSBuild Projects="$(EffectGraphRoot)EffectGraphCompile.vcxproj"
+             Properties="Configuration=$(Configuration);Platform=$(EffectGraphToolPlatform)"
+             Targets="Build" />
+  </Target>
+
+  <!-- Always runs, so the include path is there even when the headers are up to date. -->
+  <Target Name="EffectGraphBuiltInsIncludePath" BeforeTargets="ClCompile">
+    <ItemGroup>
+      <ClCompile>
+        <AdditionalIncludeDirectories>$(EffectGraphBuiltInsDir);$(EffectGraphRoot)Engine\Api;%(ClCompile.AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      </ClCompile>
+    </ItemGroup>
+  </Target>
+
+  <Target Name="EffectGraphBuiltIns" BeforeTargets="ClCompile" DependsOnTargets="EffectGraphBuiltInsIncludePath"
+          Inputs="$(EffectGraphToolDir)EffectGraphCompile\EffectGraphCompile.exe;$(EffectGraphToolDir)BuiltInEffects\BuiltInEffects.lib"
+          Outputs="$(EffectGraphBuiltInsDir)EffectGraphBuiltIns.stamp">
+    <Exec Command="&quot;$(EffectGraphToolDir)EffectGraphCompile\EffectGraphCompile.exe&quot; --builtins &quot;$(EffectGraphBuiltInsDir.TrimEnd('\'))&quot; --cache &quot;$(EffectGraphBuiltInsDir)cache&quot;" />
+  </Target>
+</Project>

@@ -1,0 +1,5 @@
+# Binary media: never convert line endings or diff as text.
+*.mp4 binary
+*.jxr binary
+*.png binary
+*.icc binary

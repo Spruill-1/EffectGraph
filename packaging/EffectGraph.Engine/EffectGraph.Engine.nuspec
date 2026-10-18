@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>EffectGraph.Engine</id>
+    <version>$version$</version>
+    <authors>David Spruill</authors>
+    <license type="expression">MIT-0</license>
+    <description>EffectGraph's engine as a static library, for a C++ program that needs more than the public API: the graph model, evaluator, effect registry, sources and display code with their headers, as ShaderLab uses them. Not a stable API: it changes with every version, so pin the version. x64 and ARM64, Debug and Release, built with MSVC v143 without /GL, so it links with Visual Studio 2022 and later. Includes every built-in effect's header. Most programs want EffectGraph.Native instead.</description>
+    <projectUrl>https://github.com/Spruill-1/EffectGraph</projectUrl>
+    <tags>direct2d d3d11 hdr shaders effects native static</tags>
+    <readme>README.md</readme>
+  </metadata>
+  <files>
+    <file src="README.md" target="" />
+    <file src="build\native\**" target="build\native" />
+  </files>
+</package>

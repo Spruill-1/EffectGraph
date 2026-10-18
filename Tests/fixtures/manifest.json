@@ -1,0 +1,19 @@
+{
+  "description": "Every fixture the unit tests read. committed: in git, must be present; sha256 pins a binary clip to the bytes MakeVideoFixtures.ps1 produced. generated: git-ignored, made by the generator; absent counts as a skip (a failure under --require-fixtures). TestFixtureManifest checks this file.",
+  "fixtures": [
+    { "name": "test_cli_basic.json", "kind": "committed" },
+    { "name": "legacy_contracts.json", "kind": "committed" },
+    { "name": "video_index_h264_180p24.mp4", "kind": "committed", "generator": "MakeVideoFixtures.ps1",
+      "sha256": "cb0334b6a08e6a9fdce57f9415ce000b2279c0826c5c928237bbacc93efbb2e2" },
+    { "name": "video_index_h264_180p30.mp4", "kind": "committed", "generator": "MakeVideoFixtures.ps1",
+      "sha256": "1203a34d25339d0f72e7d31a0a847abd3dfaeff81e19b58a02d9d7f7e02186f4" },
+    { "name": "video_index_h264_180p60.mp4", "kind": "committed", "generator": "MakeVideoFixtures.ps1",
+      "sha256": "2e5cb015ce97567323be0f5425bf739471b5c385dc1836ec542e2a6886f470fc" },
+    { "name": "video_index_h264_720p60.mp4", "kind": "committed", "generator": "MakeVideoFixtures.ps1",
+      "sha256": "6c13b6408a6a7859a9d2223576d1fc0cd72f831bdcf1ce48d1f4b647f5b1b7ba" },
+    { "name": "video_index_h264_720p60_g600.mp4", "kind": "committed", "generator": "MakeVideoFixtures.ps1",
+      "sha256": "d04b8f01d69fb331a4f10ee83ea7d4f07f40884b030f8a412a6e47d2ef0e15eb" },
+    { "name": "video_hdr10_hevc_30f.mp4", "kind": "generated", "generator": "MakeVideoFixtures.ps1" },
+    { "name": "video_sdr_h264_30f.mp4", "kind": "generated", "generator": "MakeVideoFixtures.ps1" }
+  ]
+}
