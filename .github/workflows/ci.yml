@@ -49,7 +49,8 @@ jobs:
 
   pack:
     name: Pack (x64 + ARM64, v143) and C# smoke
-    runs-on: windows-2025
+    # VS 2022's image: the windows-2025 image has v143 for x64 only, not ARM64.
+    runs-on: windows-2022
     # release.yml packs for itself.
     if: github.event_name != 'workflow_call'
     steps:

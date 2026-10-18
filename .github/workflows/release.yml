@@ -27,7 +27,8 @@ jobs:
   pack:
     name: Pack, SBOM and provenance
     needs: ci
-    runs-on: windows-2025
+    # VS 2022's image: the windows-2025 image has v143 for x64 only, not ARM64.
+    runs-on: windows-2022
     permissions:
       contents: read
       id-token: write
