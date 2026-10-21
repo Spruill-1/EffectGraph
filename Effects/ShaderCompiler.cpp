@@ -295,10 +295,13 @@ namespace ShaderLab::Effects
                 memcpy(dest + sizeof(float) * 3, &v.w, sizeof(float));
                 return true;
             }
-            // std::wstring / matrix / vector<float>: not packable as a
-            // simple cbuffer slot. Caller handles array bindings via
-            // separate paths.
-            return false;
+            else
+            {
+                // std::wstring / matrix / vector<float>: not packable as a
+                // simple cbuffer slot. Caller handles array bindings via
+                // separate paths.
+                return false;
+            }
         }, value);
     }
 }

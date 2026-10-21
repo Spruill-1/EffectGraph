@@ -268,6 +268,75 @@ float4 main(float4 pos : SV_POSITION, float4 scenePos : SCENE_POSITION,
         TEST("Lane3Consumer_CbufferPathAgrees", std::abs(cpuPx - cpuMax) <= 1e-3f * cpuMax && std::abs(cpuPx - gpuPx) <= 1e-3f * gpuMax);
     }
 
+    // Lane 3 on a static graph: nothing is dirtied after it is built, so the
+    // producer dispatches only on the first frame, and that dispatch has to
+    // publish the texture. Its request comes before the bridge initializes its
+    // runner, which once dropped it and left the consumer on the cbuffer.
+    SL_TEST_CASE(TestLane3StaticGraph, Tag::Gpu)
+    {
+        printf("\n=== Lane 3 on a graph that never changes ===\n");
+        auto& registry = ShaderLab::Effects::ShaderLabEffects::Instance();
+
+        ShaderLab::Effects::ShaderLabEffectDescriptor consumer;
+        consumer.name = L"Lane3 Static Consumer";
+        consumer.effectId = L"Lane3 Static Consumer"; consumer.effectVersion = 1;
+        consumer.shaderType = ShaderLab::Graph::CustomShaderType::PixelShader;
+        consumer.inputNames = { L"Source" };
+        consumer.hlslSource = R"HLSL(
+#include "shaderlab_params.hlsli"
+Texture2D Source : register(t0);
+SHADERLAB_GPU_BUFFER(Level, t1)
+SamplerState InputSampler : register(s0);
+cbuffer Constants : register(b0)
+{
+    SHADERLAB_PARAM(float, Level)
+};
+float4 main(float4 pos : SV_POSITION, float4 scenePos : SCENE_POSITION,
+            float4 uv0 : TEXCOORD0) : SV_TARGET
+{
+    SHADERLAB_LOAD_PARAM(float, Level)
+    return float4(Level, Level, Level, Source.Sample(InputSampler, uv0.xy).a);
+}
+)HLSL";
+        consumer.parameters = {
+            ShaderLab::Graph::ParameterDefinition{ L"Level", L"float", 0.0f, 0.0f, 10000.0f, 1.0f, {}, L"", true },
+        };
+
+        // Its own evaluator, so no earlier case's runners are already initialized.
+        ShaderLab::Rendering::GraphEvaluator evaluator;
+        auto options = ShaderLab::Performance::DefaultEvaluatorOptions();
+        options.gpuBindings = true;
+        evaluator.SetOptions(options);
+
+        ShaderLab::Graph::GraphModel g;
+        const auto srcId = g.AddNode(ShaderLab::Effects::ShaderLabEffects::CreateNode(*registry.FindByName(L"Gamut Source")));
+        const auto statsId = g.AddNode(ShaderLab::Effects::ShaderLabEffects::CreateNode(
+            *registry.FindByName(L"Luminance Statistics")));
+        const auto consId = g.AddNode(ShaderLab::Effects::ShaderLabEffects::CreateNode(consumer));
+        g.Connect(srcId, 0, statsId, 0);
+        g.Connect(srcId, 0, consId, 0);
+        g.BindProperty(consId, L"Level", statsId, L"Max", 0);
+
+        uint32_t bitsPerFrame[4]{};
+        for (auto& bits : bitsPerFrame)
+        {
+            ShaderLab::Rendering::FrameExecutor::Run(g, evaluator, g_dc.get(), {});
+            bits = evaluator.AppliedGpuBits(consId);
+        }
+        const float maxNits = AnalysisField(g.FindNode(statsId), L"Max");
+        auto r = ShaderLab::Rendering::ReadPixelRegion(g, consId, 8, 8, 1, 1, g_dc.get());
+        const float px = (r.status == ShaderLab::Rendering::ReadPixelRegionStatus::Success && r.pixels.size() >= 4)
+            ? r.pixels[0] : -1.0f;
+        printf("  [info] consumer bits per frame: %u %u %u %u; Max=%.4f pixel=%.4f\n",
+               bitsPerFrame[0], bitsPerFrame[1], bitsPerFrame[2], bitsPerFrame[3], maxNits, px);
+
+        TEST("Lane3Static_ProducerMeasuredSomething", maxNits > 1.0f);
+        TEST("Lane3Static_TextureServedFromTheFirstFrame", bitsPerFrame[0] == 2u);
+        TEST("Lane3Static_TextureServedWithoutInvalidation", bitsPerFrame[3] == 2u);
+        TEST("Lane3Static_TextureDeliversTheValue", maxNits > 1.0f && std::abs(px - maxNits) <= 1e-3f * maxNits);
+        evaluator.ReleaseCache(g);
+    }
+
     // A D3D11 compute producer whose fields are a FloatArray (packed four per
     // pixel), a scalar after it, and a Float3. Checks the bridge readback
     // unpacks the packed layout, and that a binding to the Float3's .y gives

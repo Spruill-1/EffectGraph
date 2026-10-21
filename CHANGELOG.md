@@ -6,7 +6,31 @@ All notable changes to EffectGraph are documented here. The format follows
 [ShaderLab](https://github.com/Spruill-1/ShaderLab) until 1.0.0; that history is in
 ShaderLab's changelog and in [the decision log](docs/history/decision-log.md).
 
-## [1.0.0] - Unreleased
+## [1.0.1] - Unreleased
+
+### Fixed
+
+- **A pixel shader bound to an analysis value now reads it on the GPU from the
+  first frame.** The producer's first frame asked its compute runner for the
+  analysis texture before the bridge had initialized the runner, which dropped
+  the request (`RequestAnalysisTexture` returned `E_NOT_VALID_STATE`). The
+  consumer fell back to the CPU readback and its constant buffer, which gave the
+  right value but cost a blocking readback a dispatch, and a graph that then
+  stayed unchanged never asked again, so it stayed there until something
+  dirtied the producer. The runner now records the request whatever its state,
+  and `RequestAnalysisTexture` always returns `S_OK`. Measured on WARP with a
+  graph built once and never dirtied: the consumer's applied binding mode was
+  cbuffer on all four frames before, texture on all four after, with the pixel
+  equal to the measured Max (80.0082) both ways. Every earlier lane 3 test
+  dirtied the graph each frame, which hid this; `TestLane3StaticGraph` does not.
+- **C4702** in `ShaderCompiler.cpp`: the final `return false` of a `std::visit`
+  `if constexpr` chain was unreachable for the types handled above it; it is now
+  the chain's `else`.
+- **The release SBOM scan skips `packaging/`.** It read our own `.nuspec`
+  templates as dependencies and tried to parse the SBOM it was writing. The SBOM
+  still lists the build's dependencies from `packages.config`.
+
+## [1.0.0] - 2026-10-18
 
 ### Added
 

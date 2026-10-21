@@ -71,8 +71,11 @@ jobs:
         shell: pwsh
         run: |
           dotnet tool install --global Microsoft.Sbom.DotNetTool --version 4.1.13
+          # The scan skips packaging/: its .nuspec files are our own packages, not
+          # dependencies, and packaging/out holds the SBOM being written.
           sbom-tool generate -b packaging/out -bc . -pn EffectGraph -pv ${{ steps.version.outputs.version }} `
-            -ps "EffectGraph contributors" -nsb https://github.com/${{ github.repository }} -V Warning
+            -ps "EffectGraph contributors" -nsb https://github.com/${{ github.repository }} -V Warning `
+            -cd "--DirectoryExclusionList **/packaging/**"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item packaging/out/_manifest/spdx_2.2/manifest.spdx.json "packaging/out/EffectGraph.${{ steps.version.outputs.version }}.spdx.json"
 

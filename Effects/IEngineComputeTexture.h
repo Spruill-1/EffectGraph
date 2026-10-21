@@ -49,8 +49,8 @@ namespace ShaderLab::Effects
         // Ask for lane 3. Until this is called the texture does not exist and
         // no copy pass runs, which is the whole point: a graph that has no
         // pixel-shader consumer should not pay to materialise one.
-        // Idempotent. Returns S_OK once the lane is available (it is filled on
-        // the next dispatch), or E_NOT_VALID_STATE before initialisation.
+        // Idempotent, and valid before the runner is initialised. Returns S_OK;
+        // the texture is filled on the next dispatch.
         virtual HRESULT STDMETHODCALLTYPE RequestAnalysisTexture() = 0;
 
         // The 1 x N RGBA32F texture holding Result[]. Wrapped by the caller
