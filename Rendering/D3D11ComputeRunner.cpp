@@ -156,7 +156,8 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     HRESULT __stdcall D3D11ComputeRunner::RequestAnalysisTexture()
     {
-        if (!m_device) return E_NOT_VALID_STATE;
+        // Recorded even before Initialize: the bridge initializes the runner
+        // inside the dispatch that fills the texture, after the request.
         m_analysisTexWanted = true;
         return S_OK;
     }
