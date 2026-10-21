@@ -266,8 +266,9 @@ namespace ShaderLab::Rendering
                        uint32_t dispatchX, uint32_t dispatchY, uint32_t dispatchZ,
                        const std::vector<ID3D11ShaderResourceView*>& extraSrvs,
                        const std::vector<uint32_t>& extraSrvSlots);
-        // Copies the result buffer to a staging slot; nullptr if none exists.
-        StagingSlot* ScheduleReadback();
+        // Copies the result buffer to a staging slot on `context`; nullptr
+        // if none exists.
+        StagingSlot* ScheduleReadback(ID3D11DeviceContext* context);
         HRESULT CollectBlocking(StagingSlot& slot, uint32_t resultCount, std::vector<float>& out);
         // Creates the lane-3 texture + copy shader on demand. Safe to call
         // every dispatch; returns false if the lane is unavailable.
@@ -280,6 +281,9 @@ namespace ShaderLab::Rendering
         // Writes float4 elements into the results between dispatches, and
         // refreshes the pixel-shader copy when one is published.
         HRESULT WriteResults(uint32_t firstElement, const float* float4s, uint32_t elementCount);
+        // Blocking read of the results the last dispatch left, for a caller
+        // that dispatched with Readback::None and then found it needs them.
+        HRESULT ReadResults(std::vector<float>& out);
 
     private:
     };

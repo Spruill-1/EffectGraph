@@ -85,6 +85,11 @@ namespace ShaderLab::Rendering::Evaluator
         VariantChoice Select(Graph::EffectNode& node, NodeVariantState& state,
                              const std::wstring& effectId, uint32_t effectVersion,
                              const std::string& target, uint32_t bits, uint64_t options);
+        // Whether Select would keep the GPU routing `bits`: a build for
+        // (bits, options) or (bits, 0) is ready. Makes the same compile
+        // requests Select would.
+        bool KeepsRouting(const Graph::EffectNode& node, const std::wstring& effectId, uint32_t effectVersion,
+                          const std::string& target, uint32_t bits, uint64_t options);
 
         // Queues every option combination of the node's shader for a GPU
         // binding shape (interactive hosts only), the one it shows now first.

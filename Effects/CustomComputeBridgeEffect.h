@@ -251,6 +251,8 @@ namespace ShaderLab::Effects
         {
             return m_runner.WriteResults(firstElement, float4s, elementCount);
         }
+        // Blocking read of the last dispatch's results.
+        HRESULT ReadResults(std::vector<float>& out) { return m_runner.ReadResults(out); }
         // The last blocking readback's Map result (the dispatch itself succeeded).
         HRESULT LastReadbackResult() const { return m_runner.LastReadbackResult(); }
 

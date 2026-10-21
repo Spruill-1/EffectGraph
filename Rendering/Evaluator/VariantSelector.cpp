@@ -135,6 +135,18 @@ namespace ShaderLab::Rendering::Evaluator
         return choice;
     }
 
+    bool VariantSelector::KeepsRouting(
+        const EffectNode& node, const std::wstring& effectId, uint32_t effectVersion,
+        const std::string& target, uint32_t bits, uint64_t options)
+    {
+        const auto& def = node.customEffect.value();
+        std::optional<Effects::BytecodeCompileKey> pendingKey;
+        if (GetBuild(def, effectId, effectVersion, target, bits, options, /*urgent*/ true, pendingKey))
+            return true;
+        return options != 0 &&
+               GetBuild(def, effectId, effectVersion, target, bits, 0, /*urgent*/ false, pendingKey);
+    }
+
     void VariantSelector::QueueOptionVariants(EffectNode& node, NodeVariantState& state,
                                               const std::string& target, uint32_t gpuBits)
     {

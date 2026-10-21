@@ -6,7 +6,36 @@ All notable changes to EffectGraph are documented here. The format follows
 [ShaderLab](https://github.com/Spruill-1/ShaderLab) until 1.0.0; that history is in
 ShaderLab's changelog and in [the decision log](docs/history/decision-log.md).
 
-## [1.0.1] - Unreleased
+## [1.0.2] - 2026-10-21
+
+### Fixed
+
+- **A pixel shader that reads analysis values on the GPU no longer costs their
+  producers a CPU readback on the first frame.** With
+  `skipUnneededCpuReadback` on, a producer skips its readback when every
+  consumer reads it on the GPU, but a pixel shader was judged by the build it
+  last ran, and its build is chosen after the dispatches. On a fresh graph that
+  was always the baseline, so each producer copied its results to staging and
+  blocked on a `Map` that nothing read. A pixel shader is now judged by the
+  build it will get (the binding plan with the producers that publish this
+  frame, and a ready build for it); after the dispatches the evaluator checks
+  again and reads back late for a consumer that will not get it, so a miss
+  costs the old readback rather than a wrong value (decision #235). Measured on
+  WARP (`TestLane3NoCpuReadback`): the first frame of a fresh graph dispatched
+  once and read back 0 times, down from 1, with the pixel shader on its texture
+  build; three unchanged frames dispatched nothing; a changed input dispatched
+  once with no readback.
+- **A CPU consumer bound to a producer whose values were on the GPU only read
+  stale values.** Once a producer had skipped a readback, its fields kept the
+  last values that reached the CPU, and a binding added later (or a consumer
+  falling back to its cbuffer) read those until the producer next dispatched:
+  in the test, 160 where the producer had measured 400. The evaluator now
+  records that the fields are behind and reads the results when a binding or a
+  host hint needs them, without a dispatch. The same record stops an
+  analysis-only node whose results never reached the CPU from being
+  re-dispatched every frame for having no fields.
+
+## [1.0.1] - 2026-10-20
 
 ### Fixed
 

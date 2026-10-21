@@ -305,6 +305,17 @@ void main(uint3 tid : SV_DispatchThreadID)
         return S_OK;
     }
 
+    HRESULT D3D11ComputeRunner::ReadResults(std::vector<float>& out)
+    {
+        if (!m_resultBuffer || !m_immediate || m_resultCount == 0)
+            return E_NOT_VALID_STATE;
+        // The dispatch has been submitted, so the immediate context orders
+        // this copy after it.
+        StagingSlot* slot = ScheduleReadback(m_immediate.get());
+        if (!slot) return E_NOT_VALID_STATE;
+        return CollectBlocking(*slot, m_resultCount, out);
+    }
+
     HRESULT D3D11ComputeRunner::EnsureBuffers(uint32_t resultCount)
     {
         if (m_resultCount == resultCount && m_resultBuffer) return S_OK;
@@ -704,7 +715,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         m_context->CSSetShader(nullptr, nullptr, 0);
     }
 
-    D3D11ComputeRunner::StagingSlot* D3D11ComputeRunner::ScheduleReadback()
+    D3D11ComputeRunner::StagingSlot* D3D11ComputeRunner::ScheduleReadback(ID3D11DeviceContext* context)
     {
         // A free slot; with all of them in flight, the oldest (its values
         // are superseded by this copy anyway).
@@ -717,7 +728,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 if (s.buffer && (!slot || s.seq < slot->seq)) slot = &s;
         }
         if (slot)
-            m_context->CopyResource(slot->buffer.get(), m_resultBuffer.get());
+            context->CopyResource(slot->buffer.get(), m_resultBuffer.get());
         return slot;
     }
 
@@ -805,7 +816,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // Readback only when the caller wants the values on the CPU; the SRV
         // sees the fresh buffer either way.
-        StagingSlot* slot = (resultCount > 0 && readbackMode != Readback::None) ? ScheduleReadback() : nullptr;
+        StagingSlot* slot = (resultCount > 0 && readbackMode != Readback::None) ? ScheduleReadback(m_context.get()) : nullptr;
 
         // Everything above goes to the GPU as ONE call.
         SubmitRecorded();

@@ -115,6 +115,21 @@ namespace ShaderLab::Rendering::Evaluator
         // Nodes whose dispatch this frame must copy analysis values to the CPU;
         // also asks producers for the lane-3 textures consumers can use.
         std::unordered_set<uint32_t> PlanReadbacks(const Graph::GraphModel& graph);
+        // Adds to `cpu` the producers `consumer`'s bindings read on the CPU
+        // this frame, and to `gpu` those a pixel shader is expected to read
+        // on its texture build. `ready`: the producers that will have
+        // published a texture when the consumer's build is chosen.
+        void CollectAnalysisDemand(const Graph::EffectNode& consumer, const Graph::GraphModel& graph,
+                                   const std::function<bool(uint32_t producerId)>& ready,
+                                   std::unordered_set<uint32_t>& cpu, std::unordered_set<uint32_t>* gpu);
+        // The GPU-binding bits a pixel shader's build will apply for `plan`;
+        // 0 when no build keeping that routing is ready.
+        uint32_t ExpectedTextureBits(const Graph::EffectNode& consumer, const Graph::GraphModel& graph,
+                                     const GpuBindingPlan& plan);
+        // Reads back a producer whose results are on the GPU only, when a
+        // host hint or a binding needs them on the CPU.
+        void ReadBackIfCpuNeeded(Graph::GraphModel& graph, Graph::EffectNode& producer,
+                                 const std::function<bool(uint32_t producerId)>& ready);
         // An FP32 bitmap of `image` a bridge can bind, shared by every
         // consumer this pass. nullptr with *failHr on failure.
         ID2D1Bitmap1* PreRenderInput(ID2D1DeviceContext5* dc, ID2D1Image* image,
@@ -206,7 +221,10 @@ namespace ShaderLab::Rendering::Evaluator
             std::unordered_set<uint32_t> queued;
             // Producers some pixel-shader consumer wants a lane-3 texture from.
             std::unordered_set<uint32_t> textureWanted;
-            void Clear() { entries.clear(); queued.clear(); textureWanted.clear(); }
+            // Producers that skip their readback only because a pixel-shader
+            // consumer is expected to read them on the GPU this frame.
+            std::unordered_set<uint32_t> skipExpected;
+            void Clear() { entries.clear(); queued.clear(); textureWanted.clear(); skipExpected.clear(); }
         } m_computeQueue;
 
         // True for the duration of an EvalMode::Frozen pass.
