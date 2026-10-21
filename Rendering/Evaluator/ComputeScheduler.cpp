@@ -105,10 +105,14 @@ namespace ShaderLab::Rendering::Evaluator
         // every frame defeated output caching downstream).
         const bool bindingSourceQueued = AnyBindingSource(node,
             [this](uint32_t sourceNodeId) { return m_computeQueue.queued.contains(sourceNodeId); });
+        // An analysis-only node with no fields has produced nothing yet,
+        // unless its results are on the GPU only.
+        const NodeRuntime* runtime = FindRuntime(node.id);
+        const bool gpuOnlyResults = runtime && runtime->cpuFieldsStale;
         const bool needsCompute = node.dirty ||
             bindingSourceQueued ||
             (hasImageOutput && !node.cachedOutput) ||
-            (!hasImageOutput && node.analysisOutput.fields.empty());
+            (!hasImageOutput && node.analysisOutput.fields.empty() && !gpuOnlyResults);
         // A pin fed by a compute node queued this frame has no image yet;
         // ProcessDeferredCompute resolves it after that producer dispatches.
         const bool inputFromQueuedProducer = std::any_of(inputs.begin(), inputs.end(),
@@ -122,6 +126,15 @@ namespace ShaderLab::Rendering::Evaluator
             GetOrCreateEffect(dc, node);
             m_computeQueue.entries.push_back({ node.id, std::move(inputImages) });
             m_computeQueue.queued.insert(node.id);
+        }
+        // Not dispatching: a consumer that now reads its values on the CPU
+        // (a binding just added, a fallback build) reads the GPU results.
+        else if (gpuOnlyResults && m_frameOptions.skipUnneededCpuReadback)
+        {
+            ReadBackIfCpuNeeded(graph, node, [this](uint32_t producerId)
+            {
+                return AnalysisBitmap(producerId) != nullptr || m_computeQueue.queued.contains(producerId);
+            });
         }
         // A frozen pass cannot queue, so a change it finds stays pending for
         // the next frame rather than being dropped.
@@ -157,6 +170,13 @@ namespace ShaderLab::Rendering::Evaluator
                     needsReadback.insert(id);
             }
         }
+        // A pixel shader's build is chosen after the dispatches, by which
+        // time every producer that has published or dispatches now has a
+        // texture.
+        auto publishedOrQueued = [this](uint32_t producerId)
+        {
+            return AnalysisBitmap(producerId) != nullptr || m_computeQueue.queued.contains(producerId);
+        };
         for (const auto& consumerNode : graph.Nodes())
         {
             if (consumerNode.propertyBindings.empty()) continue;
@@ -172,24 +192,82 @@ namespace ShaderLab::Rendering::Evaluator
                         __uuidof(Effects::IEngineComputeTexture), texture.put_void())))
                     texture->RequestAnalysisTexture();
             }
-            if (!skipFlag) continue;
-
-            // Skip a readback only for a binding the consumer's last build
-            // actually read on the GPU. Texture mode engages once the producer
-            // has published a bitmap, and a consumer on a fallback build reads
-            // the cbuffer; both still need this frame's CPU value. Going by
-            // what could be served instead starves exactly those frames: a
-            // silent wrong value, not a slow one.
-            for (const auto& [propName, binding] : consumerNode.propertyBindings)
-            {
-                const auto* entry = candidates.Find(propName);
-                const bool served = entry &&
-                    AppliedBindingMode(consumerNode.id, entry->gpuBindableIndex) == entry->mode;
-                if (served) continue;
-                binding.ForEachSourceNode([&](uint32_t sourceNodeId) { needsReadback.insert(sourceNodeId); });
-            }
+            if (skipFlag)
+                CollectAnalysisDemand(consumerNode, graph, publishedOrQueued, needsReadback, &m_computeQueue.skipExpected);
         }
         return needsReadback;
+    }
+
+    void EvaluatorCore::CollectAnalysisDemand(const EffectNode& consumer, const GraphModel& graph,
+        const std::function<bool(uint32_t)>& ready, std::unordered_set<uint32_t>& cpu,
+        std::unordered_set<uint32_t>* gpu)
+    {
+        if (consumer.propertyBindings.empty()) return;
+        // A pixel shader is judged by the build it will get, any other
+        // consumer by the build it last ran: a compute consumer dispatches in
+        // the same loop as its producers, and a fallback build reads the
+        // cbuffer. Going by what could be served instead starves exactly
+        // those frames: a silent wrong value, not a slow one.
+        const bool pixelConsumer = GpuLaneFor(consumer) == Effects::GpuBindingMode::Texture;
+        const GpuBindingPlan plan = pixelConsumer
+            ? PlanGpuBindings(consumer, graph, m_frameOptions.gpuBindings, ready)
+            : PlanGpuBindings(consumer, graph, m_frameOptions.gpuBindings,
+                  [this](uint32_t producerId) { return BridgeFor(producerId) != nullptr; });
+        const uint32_t expectedBits = pixelConsumer ? ExpectedTextureBits(consumer, graph, plan) : 0u;
+        for (const auto& [propName, binding] : consumer.propertyBindings)
+        {
+            const auto* entry = plan.Find(propName);
+            const bool served = entry && (pixelConsumer
+                ? Effects::BindingModeAt(expectedBits, entry->gpuBindableIndex) == entry->mode
+                : AppliedBindingMode(consumer.id, entry->gpuBindableIndex) == entry->mode);
+            auto* into = served ? gpu : &cpu;
+            if (into)
+                binding.ForEachSourceNode([&](uint32_t sourceNodeId) { into->insert(sourceNodeId); });
+        }
+    }
+
+    uint32_t EvaluatorCore::ExpectedTextureBits(const EffectNode& consumer, const GraphModel& graph,
+                                                const GpuBindingPlan& plan)
+    {
+        // The choice ApplyCustomEffect makes: a build for the plan, if one is ready.
+        if (plan.bits == 0 || consumer.type != NodeType::PixelShader) return 0;
+        PropertyMap effectiveProps;
+        ResolveBindings(consumer, graph, effectiveProps);
+        const auto identity = Effects::CompileIdentityOf(consumer);
+        const uint64_t optionKey = Effects::OptionKeyFor(consumer.customEffect.value(), effectiveProps);
+        return m_variants.KeepsRouting(consumer, identity.effectId, identity.effectVersion, "ps_5_0",
+                                       plan.bits, optionKey) ? plan.bits : 0u;
+    }
+
+    void EvaluatorCore::ReadBackIfCpuNeeded(GraphModel& graph, EffectNode& producer,
+                                            const std::function<bool(uint32_t)>& ready)
+    {
+        NodeRuntime* runtime = FindRuntime(producer.id);
+        if (!runtime || !runtime->cpuFieldsStale) return;
+        std::unordered_set<uint32_t> cpu;
+        if (m_cpuAnalysisInterest.contains(producer.id))
+            cpu.insert(producer.id);
+        for (const auto& consumer : graph.Nodes())
+        {
+            if (cpu.contains(producer.id)) break;
+            if (AnyBindingSource(consumer, [&](uint32_t id) { return id == producer.id; }))
+                CollectAnalysisDemand(consumer, graph, ready, cpu, nullptr);
+        }
+        if (!cpu.contains(producer.id)) return;
+
+        // The results the producer's last dispatch left are still current.
+        std::vector<float> floats;
+        auto* bridge = BridgeFor(producer.id);
+        const HRESULT hr = bridge ? bridge->ReadResults(floats) : E_NOT_VALID_STATE;
+        if (FAILED(hr))
+        {
+            producer.runtimeError = std::format(L"analysis readback failed at Map (0x{:08X}); fields are stale",
+                static_cast<uint32_t>(hr));
+            return;
+        }
+        UnpackAnalysisFloats(producer, floats);
+        runtime->cpuFieldsStale = false;
+        MarkBindingConsumersDirty(graph, producer.id);
     }
 
     ID2D1Bitmap1* EvaluatorCore::PreRenderInput(ID2D1DeviceContext5* dc, ID2D1Image* image,
@@ -322,6 +400,8 @@ namespace ShaderLab::Rendering::Evaluator
         // them, re-run that evaluation first, frozen so nothing is queued and
         // no readback opens a draw session.
         bool dispatchedSinceRefresh = false;
+        // Dispatched without a readback on the strength of an expected GPU consumer.
+        std::vector<uint32_t> expectedSkips;
         auto refreshUpstreamOf = [&](uint32_t consumerId)
         {
             if (!dispatchedSinceRefresh) return;
@@ -485,6 +565,10 @@ namespace ShaderLab::Rendering::Evaluator
             {
                 node->dirty = false;
                 dispatchedSinceRefresh = true;
+                // An async readback lands later and fills the fields then.
+                runtime.cpuFieldsStale = !readback;
+                if (!readback && m_computeQueue.skipExpected.contains(node->id))
+                    expectedSkips.push_back(node->id);
             }
             else if (!node->compilePending)
             {
@@ -497,6 +581,14 @@ namespace ShaderLab::Rendering::Evaluator
                 graph.MarkDownstreamDirty(node->id);
             }
         }
+
+        // Every producer has dispatched, so the textures that exist now are
+        // the ones the frozen pass binds: a consumer expected on its GPU build
+        // that will not get it is found, and read for, this frame.
+        for (uint32_t producerId : expectedSkips)
+            if (auto* producer = graph.FindNode(producerId))
+                ReadBackIfCpuNeeded(graph, *producer,
+                    [this](uint32_t id) { return AnalysisBitmap(id) != nullptr; });
 
         // A consumer removed from the graph must stop the producer paying for
         // lane 3. The producer's own RequestAnalysisTexture latch is sticky:

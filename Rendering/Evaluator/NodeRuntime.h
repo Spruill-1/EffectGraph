@@ -57,6 +57,9 @@ namespace ShaderLab::Rendering::Evaluator
         NodeVariantState    variant;
         AnalysisTextureView analysisTexture;
         bool                asyncReadbackPending{ false };
+        // The last dispatch left its results on the GPU only: the CPU fields
+        // are older than them, or empty.
+        bool                cpuFieldsStale{ false };
 
         // Kept across ResetEffect.
         //
@@ -78,6 +81,7 @@ namespace ShaderLab::Rendering::Evaluator
             variant = {};
             analysisTexture = {};
             asyncReadbackPending = false;
+            cpuFieldsStale = false;
         }
 
         // Everything but the change counter.

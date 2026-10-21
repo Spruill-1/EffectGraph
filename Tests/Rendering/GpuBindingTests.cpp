@@ -337,6 +337,167 @@ float4 main(float4 pos : SV_POSITION, float4 scenePos : SCENE_POSITION,
         evaluator.ReleaseCache(g);
     }
 
+    // With readbacks skipped, a producer whose only consumer reads it on the
+    // GPU never copies its values to the CPU, the first frame included: the
+    // consumer's build is chosen after the dispatch, so the plan judges it by
+    // the build it will get rather than the one it last ran. A CPU consumer
+    // bound later reads the GPU results without a redispatch.
+    SL_TEST_CASE(TestLane3NoCpuReadback, Tag::Gpu)
+    {
+        printf("\n=== Lane 3 without a CPU readback ===\n");
+        auto& registry = ShaderLab::Effects::ShaderLabEffects::Instance();
+
+        auto consumerOf = [](const wchar_t* name, bool gpuBindable)
+        {
+            ShaderLab::Effects::ShaderLabEffectDescriptor d;
+            d.name = name;
+            d.effectId = name; d.effectVersion = 1;
+            d.shaderType = ShaderLab::Graph::CustomShaderType::PixelShader;
+            d.inputNames = { L"Source" };
+            d.hlslSource = gpuBindable ? R"HLSL(
+#include "shaderlab_params.hlsli"
+Texture2D Source : register(t0);
+SHADERLAB_GPU_BUFFER(Level, t1)
+SamplerState InputSampler : register(s0);
+cbuffer Constants : register(b0)
+{
+    SHADERLAB_PARAM(float, Level)
+};
+float4 main(float4 pos : SV_POSITION, float4 scenePos : SCENE_POSITION,
+            float4 uv0 : TEXCOORD0) : SV_TARGET
+{
+    SHADERLAB_LOAD_PARAM(float, Level)
+    return float4(Level, Level, Level, Source.Sample(InputSampler, uv0.xy).a);
+}
+)HLSL" : R"HLSL(
+Texture2D Source : register(t0);
+SamplerState InputSampler : register(s0);
+cbuffer Constants : register(b0)
+{
+    float Level;
+};
+float4 main(float4 pos : SV_POSITION, float4 scenePos : SCENE_POSITION,
+            float4 uv0 : TEXCOORD0) : SV_TARGET
+{
+    return float4(Level, Level, Level, Source.Sample(InputSampler, uv0.xy).a);
+}
+)HLSL";
+            d.parameters = {
+                ShaderLab::Graph::ParameterDefinition{ L"Level", L"float", 0.0f, 0.0f, 10000.0f, 1.0f, {}, L"", gpuBindable },
+            };
+            return d;
+        };
+        const auto gpuConsumer = consumerOf(L"Lane3 Readback Gpu Consumer", true);
+        const auto cpuConsumer = consumerOf(L"Lane3 Readback Cpu Consumer", false);
+
+        ShaderLab::Rendering::GraphEvaluator evaluator;
+        auto options = ShaderLab::Performance::DefaultEvaluatorOptions();
+        options.gpuBindings = true;
+        options.skipUnneededCpuReadback = true;
+        options.asyncAnalysisReadback = false;
+        evaluator.SetOptions(options);
+        evaluator.ClearCpuAnalysisInterest();
+
+        ShaderLab::Graph::GraphModel g;
+        auto gradient = ShaderLab::Effects::ShaderLabEffects::CreateNode(*registry.FindByName(L"Gradient Generator"));
+        ShaderLab::Graph::SetNodeProperty(gradient, L"GradSize", 64.0f);
+        const auto gradientId = g.AddNode(std::move(gradient));
+        const auto statsId = g.AddNode(ShaderLab::Effects::ShaderLabEffects::CreateNode(
+            *registry.FindByName(L"Luminance Statistics")));
+        const auto gpuId = g.AddNode(ShaderLab::Effects::ShaderLabEffects::CreateNode(gpuConsumer));
+        g.Connect(gradientId, 0, statsId, 0);
+        g.Connect(gradientId, 0, gpuId, 0);
+        g.BindProperty(gpuId, L"Level", statsId, L"Max", 0);
+
+        auto setLevel = [&](float value)
+        {
+            auto* node = g.FindNode(gradientId);
+            for (const wchar_t* key : { L"StartR", L"StartG", L"StartB", L"EndR", L"EndG", L"EndB" })
+                ShaderLab::Graph::SetNodeProperty(*node, key, value);
+            ShaderLab::Graph::MarkNodeChanged(*node);
+        };
+        auto pixel = [&](uint32_t nodeId)
+        {
+            auto r = ShaderLab::Rendering::ReadPixelRegion(g, nodeId, 8, 8, 1, 1, g_dc.get());
+            auto* n = g.FindNode(nodeId);
+            if (r.status != ShaderLab::Rendering::ReadPixelRegionStatus::Success)
+                printf("    (debug) node %u read status %d, output %p, error '%ls'\n", nodeId,
+                       static_cast<int>(r.status), static_cast<void*>(n->cachedOutput), n->runtimeError.c_str());
+            return (r.status == ShaderLab::Rendering::ReadPixelRegionStatus::Success && r.pixels.size() >= 4)
+                ? r.pixels[0] : -1.0f;
+        };
+        // Readbacks a frame performed: its dispatches less the skipped ones.
+        struct Transport { uint32_t dispatches; uint64_t readbacks; };
+        auto frame = [&]() -> Transport
+        {
+            const uint64_t skippedBefore = ShaderLab::Performance::SkippedCpuReadbacks();
+            const auto result = ShaderLab::Rendering::FrameExecutor::Run(g, evaluator, g_dc.get(), {});
+            const uint64_t skipped = ShaderLab::Performance::SkippedCpuReadbacks() - skippedBefore;
+            return { result.dispatches, result.dispatches - skipped };
+        };
+        auto statsMax = [&]() { return AnalysisField(g.FindNode(statsId), L"Max"); };
+
+        // ---- the first frame of a fresh graph, then three unchanged ones ----
+        setLevel(2.0f);
+        const Transport first = frame();
+        const uint32_t firstBits = evaluator.AppliedGpuBits(gpuId);
+        const float firstFieldsMax = statsMax();
+        const float firstPx = pixel(gpuId);
+        Transport replays{ 0, 0 };
+        for (int i = 0; i < 3; ++i)
+        {
+            const Transport t = frame();
+            replays.dispatches += t.dispatches;
+            replays.readbacks += t.readbacks;
+        }
+        const float replayPx = pixel(gpuId);
+        printf("  [info] first frame: %u dispatch(es), %llu readback(s), bits %u, pixel %.4f; "
+               "3 replays: %u dispatch(es), %llu readback(s)\n",
+               first.dispatches, first.readbacks, firstBits, firstPx, replays.dispatches, replays.readbacks);
+        TEST("NoReadback_FirstFrameDispatchedOnce", first.dispatches == 1);
+        TEST("NoReadback_FirstFrameReadsNothingBack", first.readbacks == 0 && firstFieldsMax < 0.0f);
+        TEST("NoReadback_FirstFrameServedOnGpu", firstBits == 2u);
+        TEST("NoReadback_ReplaysDoNotRedispatch", replays.dispatches == 0 && replays.readbacks == 0);
+        TEST("NoReadback_ReplaysKeepThePixel", firstPx > 1.0f && replayPx == firstPx);
+
+        // ---- a changed input: the new value, still GPU only ----
+        setLevel(5.0f);
+        const Transport changed = frame();
+        const float changedPx = pixel(gpuId);
+        printf("  [info] changed input: %u dispatch(es), %llu readback(s), pixel %.4f -> %.4f\n",
+               changed.dispatches, changed.readbacks, firstPx, changedPx);
+        TEST("NoReadback_ChangedInputDispatches", changed.dispatches == 1 && changed.readbacks == 0);
+        TEST("NoReadback_ChangedInputMovesThePixel", changedPx > firstPx * 1.5f);
+
+        // ---- a CPU consumer bound to the clean producer reads its GPU results ----
+        const auto cpuId = g.AddNode(ShaderLab::Effects::ShaderLabEffects::CreateNode(cpuConsumer));
+        g.Connect(gradientId, 0, cpuId, 0);
+        g.BindProperty(cpuId, L"Level", statsId, L"Max", 0);
+        const Transport bound = frame();
+        const float cpuPx = pixel(cpuId);
+        const float boundMax = statsMax();
+        printf("  [info] CPU consumer bound: %u dispatch(es); Max %.4f, its pixel %.4f, GPU consumer %.4f\n",
+               bound.dispatches, boundMax, cpuPx, pixel(gpuId));
+        TEST("NoReadback_CpuConsumerNeedsNoRedispatch", bound.dispatches == 0);
+        TEST("NoReadback_CpuConsumerGetsCurrentValue",
+             boundMax > 1.0f && std::abs(cpuPx - boundMax) <= 1e-3f * boundMax &&
+             std::abs(cpuPx - changedPx) <= 1e-3f * changedPx);
+
+        // ---- with a CPU consumer present, a change reads back for it ----
+        setLevel(3.0f);
+        const Transport shared = frame();
+        const float sharedGpuPx = pixel(gpuId);
+        const float sharedCpuPx = pixel(cpuId);
+        printf("  [info] shared producer: %u readback(s); GPU consumer %.4f, CPU consumer %.4f, Max %.4f\n",
+               static_cast<unsigned>(shared.readbacks), sharedGpuPx, sharedCpuPx, statsMax());
+        TEST("NoReadback_SharedProducerReadsBackOnce", shared.dispatches == 1 && shared.readbacks == 1);
+        TEST("NoReadback_SharedProducerKeepsGpuBinding", evaluator.AppliedGpuBits(gpuId) == 2u);
+        TEST("NoReadback_SharedProducerBothCurrent",
+             std::abs(sharedCpuPx - statsMax()) <= 1e-3f * statsMax() &&
+             std::abs(sharedGpuPx - sharedCpuPx) <= 1e-3f * sharedCpuPx && sharedCpuPx < changedPx);
+        evaluator.ReleaseCache(g);
+    }
+
     // A D3D11 compute producer whose fields are a FloatArray (packed four per
     // pixel), a scalar after it, and a Float3. Checks the bridge readback
     // unpacks the packed layout, and that a binding to the Float3's .y gives
