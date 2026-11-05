@@ -234,11 +234,13 @@ float4 main(
 
     IFACEMETHODIMP CustomComputeBridgeEffect::MapInvalidRect(
         UINT32 /*inputIndex*/,
-        D2D1_RECT_L invalidInputRect,
+        D2D1_RECT_L /*invalidInputRect*/,
         D2D1_RECT_L* invalidOutputRect) const
     {
         if (!invalidOutputRect) return E_INVALIDARG;
-        *invalidOutputRect = invalidInputRect;
+        // The dispatch's output (an image, or analysis values) is not laid
+        // out in its input's pixels: any input change changes all of it.
+        *invalidOutputRect = cInfiniteRectL;
         return S_OK;
     }
 
@@ -410,9 +412,13 @@ float4 main(
             ~ResetPerCallState()
             {
                 self->m_asyncReadback = false;
+                self->m_textureCopy = Rendering::D3D11ComputeRunner::TextureCopy::All;
+                self->m_textureCopyKeep.clear();
                 self->m_gpuBindingSrvs.clear();
                 self->m_gpuBindingSlots.clear();
                 self->m_dispatchX = self->m_dispatchY = self->m_dispatchZ = 1;
+                self->m_dirtyRects.clear();
+                self->m_dirtyRectsGiven = false;
             }
         } resetPerCallState{ this };
         m_lastFailure = DispatchStage::None;
@@ -471,6 +477,9 @@ float4 main(
         inputRaw.reserve(inputTextures.size());
         for (const auto& t : inputTextures) inputRaw.push_back(t.get());
 
+        m_runner.SetTextureCopy(m_textureCopy, m_textureCopyKeep);
+        m_runner.SetCellRects(m_dirtyRectsGiven ? m_dirtyRects.data() : nullptr,
+                              static_cast<uint32_t>(m_dirtyRects.size()));
         auto floats = m_runner.DispatchWithImageOutput(
             inputRaw,
             cbBytes,
@@ -509,9 +518,9 @@ float4 main(
         return id;
     }
 
-    bool CustomComputeBridgeEffect::PollAnalysisReadback(std::vector<float>& out)
+    bool CustomComputeBridgeEffect::PollAnalysisReadback(std::vector<float>& out, uint64_t* seq)
     {
-        return m_runner.PollReadback(out);
+        return m_runner.PollReadback(out, seq);
     }
 
     HRESULT CustomComputeBridgeEffect::SetGpuBinding(
@@ -530,6 +539,15 @@ float4 main(
         m_dispatchX = x;
         m_dispatchY = y;
         m_dispatchZ = z;
+        return S_OK;
+    }
+
+    HRESULT CustomComputeBridgeEffect::SetInputDirtyRects(
+        const RECT* rects, UINT32 count)
+    {
+        if (!rects && count > 0) return E_INVALIDARG;
+        m_dirtyRectsGiven = rects != nullptr;
+        m_dirtyRects.assign(rects, rects ? rects + count : rects);
         return S_OK;
     }
 

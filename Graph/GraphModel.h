@@ -102,8 +102,21 @@ namespace ShaderLab::Graph
         // Marks every node reachable downstream of a dirty node, along image
         // edges, dirty too. Binding consumers are left to the evaluator: it
         // dirties them when a bound value actually changes, which a dirty
-        // producer has not yet done.
-        void PropagateDirtyDownstream();
+        // producer has not yet done. Each node gets the union of what its
+        // inputs' regions map to (MapRegion); with `useRegions` false every
+        // dirty node is dirty whole.
+        void PropagateDirtyDownstream(bool useRegions = true);
+
+        // The region PropagateDirtyDownstream would leave on `nodeId` (None
+        // when it would stay clean), changing nothing.
+        DirtyRegion PendingDirtyRegion(uint32_t nodeId, bool useRegions = true) const;
+
+        // The realize generation a region ingested now is tagged with. A host
+        // that realizes incrementally advances it once per realize.
+        uint64_t RegionGeneration() const { return m_regionGeneration; }
+        void AdvanceRegionGeneration() { ++m_regionGeneration; }
+        // A move rect's place in ingestion order (DirtyMove::sequence).
+        uint64_t NextMoveSequence() { return ++m_moveSequence; }
 
         // Marks every node downstream of nodeId (image edges, not nodeId
         // itself) dirty.
@@ -171,10 +184,15 @@ namespace ShaderLab::Graph
         std::vector<uint32_t> KahnOrder() const;
 
         // Marks everything reachable from `from` along image edges dirty.
-        void MarkReachableDirty(std::vector<uint32_t> from);
+        void MarkReachableDirty(std::vector<uint32_t> from, bool useRegions);
+        // Carries each node's region in `regions` along image edges into
+        // the nodes downstream, adding them to the map.
+        void PropagateRegions(std::unordered_map<uint32_t, DirtyRegion>& regions, bool useRegions) const;
 
         std::vector<EffectNode> m_nodes;
         std::vector<EffectEdge> m_edges;
         uint32_t m_nextId{ 1 };
+        uint64_t m_regionGeneration{ 1 };
+        uint64_t m_moveSequence{ 0 };
     };
 }

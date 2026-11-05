@@ -61,20 +61,24 @@ namespace ShaderLab::Rendering
         m_deferred = (m_context == m_deferredCtx);
     }
 
-    void D3D11ComputeRunner::SubmitRecorded()
+    HRESULT D3D11ComputeRunner::SubmitRecorded()
     {
-        if (!m_deferred || !m_context || !m_immediate) return;
+        const bool injected = std::exchange(m_failNextSubmit, false);
+        if (!m_deferred || !m_context || !m_immediate) return injected ? E_OUTOFMEMORY : S_OK;
         winrt::com_ptr<ID3D11CommandList> list;
         // FALSE: the deferred context starts the next recording from default
         // state, which is what we want -- every dispatch binds what it uses.
-        if (FAILED(m_context->FinishCommandList(FALSE, list.put())) || !list)
-            return;
+        HRESULT hr = m_context->FinishCommandList(FALSE, list.put());
+        if (injected) hr = E_OUTOFMEMORY;
+        if (FAILED(hr) || !list)
+            return FAILED(hr) ? hr : E_FAIL;
         // TRUE is NOT optional. With FALSE the runtime resets the immediate
         // context to defaults afterwards, and if this submit lands in the
         // middle of D2D building its own pipeline state, that reset wipes
         // D2D's half-set bindings -- the same race, pointed the other way.
         // TRUE leaves the immediate context exactly as this call found it.
         m_immediate->ExecuteCommandList(list.get(), TRUE);
+        return S_OK;
     }
 
     bool D3D11ComputeRunner::CompileShader(const std::string& hlslSource)
@@ -152,6 +156,34 @@ void main(uint3 tid : SV_DispatchThreadID)
     Dst[int2((int)tid.x, 0)] = Src[tid.x];
 }
 )HLSL";
+
+        // The same, writing only the texels whose bit is set in Keep.
+        constexpr const char* kMaskedAnalysisCopyHLSL = R"HLSL(
+StructuredBuffer<float4>   Src : register(t0);
+StructuredBuffer<uint>     Keep : register(t1);
+RWTexture2D<float4>        Dst : register(u0);
+cbuffer C : register(b0) { uint Count; uint3 _pad; };
+[numthreads(64, 1, 1)]
+void main(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= Count) return;
+    if (((Keep[tid.x >> 5] >> (tid.x & 31)) & 1) == 0) return;
+    Dst[int2((int)tid.x, 0)] = Src[tid.x];
+}
+)HLSL";
+
+        winrt::com_ptr<ID3D11ComputeShader> CompileCopyShader(ID3D11Device* device, const char* source, const char* name)
+        {
+            winrt::com_ptr<ID3DBlob> blob, errors;
+            winrt::com_ptr<ID3D11ComputeShader> shader;
+            if (FAILED(D3DCompile(source, std::strlen(source), name, nullptr, nullptr, "main", "cs_5_0",
+                                  D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
+                                  blob.put(), errors.put())) || !blob)
+                return nullptr;
+            if (FAILED(device->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, shader.put())))
+                return nullptr;
+            return shader;
+        }
     }
 
     HRESULT __stdcall D3D11ComputeRunner::RequestAnalysisTexture()
@@ -257,20 +289,67 @@ void main(uint3 tid : SV_DispatchThreadID)
         return true;
     }
 
-    void D3D11ComputeRunner::PublishAnalysisTexture()
+    bool D3D11ComputeRunner::EnsureKeepMask(const std::vector<uint32_t>& keep)
     {
-        if (!EnsureAnalysisTexture()) return;
-        if (!m_resultSRV || !m_analysisTexUAV || !m_copyConstants || !m_context) return;
+        if (!m_device || !m_immediate) return false;
+        if (!m_maskedCopyShader)
+        {
+            m_maskedCopyShader = CompileCopyShader(m_device.get(), kMaskedAnalysisCopyHLSL, "MaskedAnalysisCopy");
+            if (!m_maskedCopyShader) return false;
+        }
+        const uint32_t words = (std::max)((m_resultCount + 31) / 32, 1u);
+        std::vector<uint32_t> padded(words, 0u);
+        std::copy_n(keep.begin(), (std::min)(keep.size(), padded.size()), padded.begin());
+        if (!m_keepBuffer || m_keepUploaded.size() != padded.size())
+        {
+            m_keepBuffer = nullptr;
+            m_keepSrv = nullptr;
+            m_keepUploaded.clear();
+            D3D11_BUFFER_DESC desc{};
+            desc.ByteWidth = words * 4u;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+            desc.StructureByteStride = 4;
+            if (FAILED(m_device->CreateBuffer(&desc, nullptr, m_keepBuffer.put()))) return false;
+            D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+            view.Format = DXGI_FORMAT_UNKNOWN;
+            view.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+            view.Buffer.NumElements = words;
+            if (FAILED(m_device->CreateShaderResourceView(m_keepBuffer.get(), &view, m_keepSrv.put())))
+            {
+                m_keepBuffer = nullptr;
+                return false;
+            }
+        }
+        if (m_keepUploaded != padded)
+        {
+            // Whole-buffer update on the immediate context, before the
+            // recorded copy that reads it is submitted.
+            m_immediate->UpdateSubresource(m_keepBuffer.get(), 0, nullptr, padded.data(), 0, 0);
+            m_keepUploaded = std::move(padded);
+        }
+        return true;
+    }
 
-        ID3D11ShaderResourceView* srvs[] = { m_resultSRV.get() };
+    bool D3D11ComputeRunner::PublishAnalysisTexture(const std::vector<uint32_t>* keep)
+    {
+        if (std::exchange(m_failNextTextureCopy, false)) return false;
+        if (!EnsureAnalysisTexture()) return false;
+        if (!m_resultSRV || !m_analysisTexUAV || !m_copyConstants || !m_context) return false;
+        // A texture not yet filled holds nothing a mask could keep.
+        const bool masked = keep && m_analysisTexFilled;
+        if (masked && !EnsureKeepMask(*keep)) return false;
+
+        ID3D11ShaderResourceView* srvs[] = { m_resultSRV.get(), masked ? m_keepSrv.get() : nullptr };
         ID3D11UnorderedAccessView* uavs[] = { m_analysisTexUAV.get() };
         // Its own cbuffer: the main shader's constants have a different
         // layout, and rebinding theirs here would corrupt the next dispatch.
         ID3D11Buffer* cbs[] = { m_copyConstants.get() };
         UINT counts[] = { 0 };
 
-        m_context->CSSetShader(m_analysisCopyShader.get(), nullptr, 0);
-        m_context->CSSetShaderResources(0, 1, srvs);
+        m_context->CSSetShader(masked ? m_maskedCopyShader.get() : m_analysisCopyShader.get(), nullptr, 0);
+        m_context->CSSetShaderResources(0, masked ? 2 : 1, srvs);
         m_context->CSSetUnorderedAccessViews(0, 1, uavs, counts);
         m_context->CSSetConstantBuffers(0, 1, cbs);
         m_context->Dispatch((m_resultCount + 63) / 64, 1, 1);
@@ -278,16 +357,30 @@ void main(uint3 tid : SV_DispatchThreadID)
         // Unbind: leaving the result SRV bound to t0 would conflict with the
         // next dispatch binding the same resource as a UAV, and D3D silently
         // drops one of the two.
-        ID3D11ShaderResourceView* nullSrv[] = { nullptr };
+        ID3D11ShaderResourceView* nullSrv[] = { nullptr, nullptr };
         ID3D11UnorderedAccessView* nullUav[] = { nullptr };
-        m_context->CSSetShaderResources(0, 1, nullSrv);
+        m_context->CSSetShaderResources(0, 2, nullSrv);
         m_context->CSSetUnorderedAccessViews(0, 1, nullUav, counts);
         m_context->CSSetShader(nullptr, nullptr, 0);
 
         m_analysisTexFilled = true;
+        return true;
     }
 
-    HRESULT D3D11ComputeRunner::WriteResults(uint32_t firstElement, const float* float4s, uint32_t elementCount)
+    HRESULT D3D11ComputeRunner::WriteAnalysisTexels(uint32_t firstTexel, const float* float4s, uint32_t texelCount)
+    {
+        if (!float4s || texelCount == 0 || uint64_t{ firstTexel } + texelCount > m_resultCount)
+            return E_INVALIDARG;
+        if (!m_immediate || !EnsureAnalysisTexture()) return E_NOT_VALID_STATE;
+        const D3D11_BOX box{ firstTexel, 0, 0, firstTexel + texelCount, 1, 1 };
+        m_immediate->UpdateSubresource(m_analysisTex.get(), 0, &box, float4s, texelCount * 16u, 0);
+        if (firstTexel == 0 && texelCount == m_resultCount)
+            m_analysisTexFilled = true;
+        return S_OK;
+    }
+
+    HRESULT D3D11ComputeRunner::WriteResults(uint32_t firstElement, const float* float4s, uint32_t elementCount,
+                                             bool publishTexture)
     {
         if (!m_resultBuffer || !m_immediate || !float4s || elementCount == 0 ||
             uint64_t{ firstElement } + elementCount > m_resultCount)
@@ -297,10 +390,14 @@ void main(uint3 tid : SV_DispatchThreadID)
         // after it.
         const D3D11_BOX box{ firstElement * 16u, 0, 0, (firstElement + elementCount) * 16u, 1, 1 };
         m_immediate->UpdateSubresource(m_resultBuffer.get(), 0, &box, float4s, 0, 0);
-        if (m_analysisTexWanted && m_analysisTexFilled)
+        if (publishTexture && m_analysisTexWanted && m_analysisTexFilled)
         {
-            PublishAnalysisTexture();
-            SubmitRecorded();
+            const bool filledBefore = m_analysisTexFilled;
+            const bool copied = PublishAnalysisTexture();
+            const HRESULT submitted = SubmitRecorded();
+            if (FAILED(submitted)) m_analysisTexFilled = filledBefore;
+            // The buffer took the values; the texture did not.
+            if (!copied || FAILED(submitted)) return E_FAIL;
         }
         return S_OK;
     }
@@ -320,6 +417,10 @@ void main(uint3 tid : SV_DispatchThreadID)
     {
         if (m_resultCount == resultCount && m_resultBuffer) return S_OK;
         m_resultCount = resultCount;
+        ++m_bufferGeneration;
+        m_keepBuffer = nullptr;
+        m_keepSrv = nullptr;
+        m_keepUploaded.clear();
         // Lane 3 is sized off resultCount, so it has to go with the rest.
         // Keep m_analysisTexWanted: the consumer's request outlives a resize.
         m_analysisTex = nullptr;
@@ -400,6 +501,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     void D3D11ComputeRunner::ReflectContracts()
     {
         m_usesScratch = false;
+        m_usesReduceCells = false;
         m_usesImagePass = false;
         m_accumulatorStride = 0;
         m_accumulatorNeedsClear = true;
@@ -416,6 +518,11 @@ void main(uint3 tid : SV_DispatchThreadID)
         D3D11_SHADER_INPUT_BIND_DESC bd{};
         if (SUCCEEDED(reflect->GetResourceBindingDescByName("_SLScratch", &bd)))
             m_usesScratch = (bd.BindPoint == 2);
+        // Cell reductions: the scratch plus the cell constants.
+        D3D11_SHADER_INPUT_BIND_DESC cellsBind{};
+        m_usesReduceCells = m_usesScratch &&
+            SUCCEEDED(reflect->GetResourceBindingDescByName("_SLReduceCells", &cellsBind)) &&
+            cellsBind.Type == D3D_SIT_CBUFFER && cellsBind.BindPoint == Effects::cReduceCellsConstantsSlot;
 
         // Two-pass image contract. For a structured buffer, NumSamples is the stride.
         D3D11_SHADER_INPUT_BIND_DESC passBind{};
@@ -514,8 +621,101 @@ void main(uint3 tid : SV_DispatchThreadID)
         return true;
     }
 
-    bool D3D11ComputeRunner::PollReadback(std::vector<float>& out)
+    uint64_t D3D11ComputeRunner::CellMaskForRects(const RECT* rects, uint32_t count, uint32_t width, uint32_t height)
     {
+        using Effects::kReduceCellColumns;
+        using Effects::kReduceCellRows;
+        static_assert(Effects::kReduceCells <= 64, "the mask is 64 bits");
+        uint64_t mask = 0;
+        for (uint32_t i = 0; rects && i < count; ++i)
+        {
+            // Clipped to the image; empty after clipping touches nothing.
+            const int64_t left = (std::max)(int64_t{ rects[i].left }, int64_t{ 0 });
+            const int64_t top = (std::max)(int64_t{ rects[i].top }, int64_t{ 0 });
+            const int64_t right = (std::min)(int64_t{ rects[i].right }, int64_t{ width });
+            const int64_t bottom = (std::min)(int64_t{ rects[i].bottom }, int64_t{ height });
+            if (right <= left || bottom <= top) continue;
+            // The same integer cell bounds as ShaderLabCellRect.
+            for (uint32_t cy = 0; cy < kReduceCellRows; ++cy)
+            {
+                const int64_t y0 = int64_t{ cy } * height / kReduceCellRows;
+                const int64_t y1 = int64_t{ cy + 1 } * height / kReduceCellRows;
+                if (y1 <= top || y0 >= bottom || y1 <= y0) continue;
+                for (uint32_t cx = 0; cx < kReduceCellColumns; ++cx)
+                {
+                    const int64_t x0 = int64_t{ cx } * width / kReduceCellColumns;
+                    const int64_t x1 = int64_t{ cx + 1 } * width / kReduceCellColumns;
+                    if (x1 <= left || x0 >= right || x1 <= x0) continue;
+                    mask |= uint64_t{ 1 } << (cy * kReduceCellColumns + cx);
+                }
+            }
+        }
+        return mask;
+    }
+
+    HRESULT D3D11ComputeRunner::PlanCells(ID3D11Texture2D* input0Texture, const D3D11_TEXTURE2D_DESC& input0,
+                                          const std::vector<BYTE>& cbufferData, const std::vector<RECT>& rects,
+                                          bool rectsGiven, uint32_t& groups)
+    {
+        groups = 0;
+        if (!EnsureScratch()) return E_OUTOFMEMORY;
+        if (!m_cellConstants)
+        {
+            D3D11_BUFFER_DESC desc{};
+            desc.ByteWidth = 16u + Effects::kReduceCells * 4u;   // two uints padded to a register, then CellOf
+            desc.Usage = D3D11_USAGE_DYNAMIC;
+            desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            if (const HRESULT hr = m_device->CreateBuffer(&desc, nullptr, m_cellConstants.put()); FAILED(hr))
+                return hr;
+        }
+
+        CellKey key{ m_shader.get(), input0Texture, m_scratch.get(), input0.Width, input0.Height, input0.Format,
+                     cbufferData };
+        constexpr uint64_t all = ~uint64_t{ 0 } >> (64 - Effects::kReduceCells);
+        uint64_t mask = all;
+        if (rectsGiven && m_cellKey && *m_cellKey == key)
+        {
+            mask = CellMaskForRects(rects.data(), static_cast<uint32_t>(rects.size()), input0.Width, input0.Height);
+            // Nothing in view changed, but the fold still has to run and
+            // write Result: one cell, recomputed from unchanged pixels.
+            if (mask == 0) mask = 1;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (const HRESULT hr = m_context->Map(m_cellConstants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped); FAILED(hr))
+            return hr;
+        auto* words = static_cast<uint32_t*>(mapped.pData);
+        std::memset(words, 0, 16u + Effects::kReduceCells * 4u);
+        uint32_t count = 0;
+        for (uint32_t cell = 0; cell < Effects::kReduceCells; ++cell)
+            if (mask & (uint64_t{ 1 } << cell)) words[4 + count++] = cell;
+        words[0] = count;                   // DispatchedGroups
+        words[1] = Effects::kReduceCells;   // SlotCount
+        m_context->Unmap(m_cellConstants.get(), 0);
+
+        groups = count;
+        m_cellKey = std::move(key);
+        m_lastCellMask = mask;
+        m_lastCellRectsGiven = rectsGiven;
+        m_lastCellsDispatched = count;
+        m_lastCellsTotal = Effects::kReduceCells;
+        return S_OK;
+    }
+
+    bool D3D11ComputeRunner::CollectNewestBlocking(std::vector<float>& out, uint64_t* seq)
+    {
+        StagingSlot* newest = nullptr;
+        for (auto& s : m_staging)
+            if (s.pending && (!newest || s.seq > newest->seq)) newest = &s;
+        if (!newest || !m_immediate) return false;
+        if (seq) *seq = newest->seq;
+        return SUCCEEDED(CollectBlocking(*newest, m_resultCount, out));
+    }
+
+    bool D3D11ComputeRunner::PollReadback(std::vector<float>& out, uint64_t* seq)
+    {
+        m_lastPollResult = S_OK;
         if (!m_immediate || m_resultCount == 0) return false;
         // Newest completed copy wins; walk newest-first so the first success
         // ends the search, then retire everything older.
@@ -530,17 +730,27 @@ void main(uint3 tid : SV_DispatchThreadID)
             HRESULT hr = m_immediate->Map(order[i]->buffer.get(), 0, D3D11_MAP_READ,
                                           D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
             if (hr == DXGI_ERROR_WAS_STILL_DRAWING) continue;
+            if (SUCCEEDED(hr) && std::exchange(m_failNextPoll, false))
+            {
+                m_immediate->Unmap(order[i]->buffer.get(), 0);
+                hr = E_OUTOFMEMORY;
+            }
             if (SUCCEEDED(hr))
             {
                 const float* data = static_cast<const float*>(mapped.pData);
                 out.assign(data, data + m_resultCount * 4);
                 m_immediate->Unmap(order[i]->buffer.get(), 0);
             }
+            else
+            {
+                m_lastPollResult = hr;
+            }
             // Completed (or failed for good): this slot and every older one
             // are done -- older values are superseded by this one.
-            const uint64_t seq = order[i]->seq;
+            const uint64_t delivered = order[i]->seq;
             for (auto& s : m_staging)
-                if (s.pending && s.seq <= seq) s.pending = false;
+                if (s.pending && s.seq <= delivered) s.pending = false;
+            if (seq) *seq = delivered;
             return SUCCEEDED(hr);
         }
         return false;
@@ -636,7 +846,8 @@ void main(uint3 tid : SV_DispatchThreadID)
                                        const D3D11_TEXTURE2D_DESC& input0, const D3D11_TEXTURE2D_DESC& output,
                                        uint32_t dispatchX, uint32_t dispatchY, uint32_t dispatchZ,
                                        const std::vector<ID3D11ShaderResourceView*>& extraSrvs,
-                                       const std::vector<uint32_t>& extraSrvSlots)
+                                       const std::vector<uint32_t>& extraSrvSlots,
+                                       uint32_t cellGroups)
     {
         const uint32_t clearValues[4] = { 0, 0, 0, 0 };
         m_context->ClearUnorderedAccessViewUint(m_resultUAV.get(), clearValues);
@@ -660,8 +871,18 @@ void main(uint3 tid : SV_DispatchThreadID)
         {
             const UINT zero[4] = { 0, 0, 0, 0 };
             m_context->ClearUnorderedAccessViewUint(m_scratchHeadUAV.get(), zero);
-            if (!m_usesImagePass && dispatchX <= 1 && dispatchY <= 1 && dispatchZ <= 1)
+            if (m_usesReduceCells)
+            {
+                // One group per cell recomputed (PlanCells).
+                dispatchX = (std::max)(cellGroups, 1u);
+                dispatchY = dispatchZ = 1;
+                ID3D11Buffer* cells[] = { m_cellConstants.get() };
+                m_context->CSSetConstantBuffers(Effects::cReduceCellsConstantsSlot, 1, cells);
+            }
+            else if (!m_usesImagePass && dispatchX <= 1 && dispatchY <= 1 && dispatchZ <= 1)
+            {
                 dispatchX = Effects::kReduceGroups;
+            }
         }
 
         ID3D11UnorderedAccessView* uavs[4] = { m_resultUAV.get(), imageView,
@@ -712,6 +933,11 @@ void main(uint3 tid : SV_DispatchThreadID)
         }
         ID3D11UnorderedAccessView* nullUAVs[4] = { nullptr, nullptr, nullptr, nullptr };
         m_context->CSSetUnorderedAccessViews(0, uavCount, nullUAVs, nullptr);
+        if (m_usesReduceCells)
+        {
+            ID3D11Buffer* none[] = { nullptr };
+            m_context->CSSetConstantBuffers(Effects::cReduceCellsConstantsSlot, 1, none);
+        }
         m_context->CSSetShader(nullptr, nullptr, 0);
     }
 
@@ -760,6 +986,15 @@ void main(uint3 tid : SV_DispatchThreadID)
         std::vector<float> result;
         m_lastDispatchResult = E_FAIL;
         m_lastReadbackResult = S_OK;
+        // SetTextureCopy holds for this dispatch only, whether it runs or not.
+        const TextureCopy copy = std::exchange(m_textureCopy, TextureCopy::All);
+        const std::vector<uint32_t> keep = std::exchange(m_copyKeep, {});
+        // So are the cell rects.
+        const std::vector<RECT> cellRects = std::exchange(m_cellRects, {});
+        const bool cellRectsGiven = std::exchange(m_cellRectsGiven, false);
+        m_lastCellsDispatched = m_lastCellsTotal = 0;
+        m_lastCellMask = 0;
+        m_lastCellRectsGiven = false;
         auto fail = [&](HRESULT hr) { m_lastDispatchResult = hr; return std::move(result); };
 
         // Record on the private deferred context unless the benchmark switch
@@ -803,23 +1038,44 @@ void main(uint3 tid : SV_DispatchThreadID)
         if (const HRESULT hr = PackConstants(input0, cbufferData); FAILED(hr))
             return fail(hr);
 
+        uint32_t cellGroups = 0;
+        if (m_usesReduceCells)
+            if (const HRESULT hr = PlanCells(inputTextures[0], input0, cbufferData, cellRects, cellRectsGiven, cellGroups);
+                FAILED(hr))
+                return fail(hr);
+
         RunPasses(inputViewPtrs, imageView.get(), input0, output, dispatchX, dispatchY, dispatchZ,
-                  extraSrvs, extraSrvSlots);
+                  extraSrvs, extraSrvSlots, cellGroups);
 
         // Lane 3: publish Result[] into the 1 x N texture only when a consumer
         // asked for it -- a graph with no pixel-shader consumer never creates
         // the texture or runs the copy. After the unbind above: the copy reads
         // the result buffer as an SRV, and D3D silently drops one of two
         // views of a resource bound at once.
-        if (m_analysisTexWanted && resultCount > 0)
-            PublishAnalysisTexture();
+        // TextureCopy::None and Masked apply to a filled texture only: an
+        // unfilled one is always copied whole (its first fill).
+        m_textureCopyFailed = false;
+        const bool texFilledBefore = m_analysisTexFilled;
+        if (m_analysisTexWanted && resultCount > 0 && (copy != TextureCopy::None || !m_analysisTexFilled))
+            m_textureCopyFailed = !PublishAnalysisTexture(copy == TextureCopy::Masked ? &keep : nullptr);
 
         // Readback only when the caller wants the values on the CPU; the SRV
         // sees the fresh buffer either way.
         StagingSlot* slot = (resultCount > 0 && readbackMode != Readback::None) ? ScheduleReadback(m_context.get()) : nullptr;
 
-        // Everything above goes to the GPU as ONE call.
-        SubmitRecorded();
+        // Everything above goes to the GPU as ONE call. A list that never
+        // ran left the cells' partials and the texture as they were, so the
+        // kept partials no longer match the key PlanCells recorded: the next
+        // dispatch recomputes every cell.
+        if (const HRESULT hr = SubmitRecorded(); FAILED(hr))
+        {
+            m_cellKey.reset();
+            m_analysisTexFilled = texFilledBefore;
+            m_lastCellsDispatched = m_lastCellsTotal = 0;
+            m_lastCellMask = 0;
+            m_lastCellRectsGiven = false;
+            return fail(hr);
+        }
 
         // A deferred context cannot Map for READ, so the read happens on the
         // immediate context, after the list that fills the staging buffer.
@@ -831,6 +1087,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         {
             slot->pending = true;
             slot->seq = ++m_stagingSeq;
+            m_lastScheduledSeq = slot->seq;
         }
 
         // Consumers detect a fresh dispatch by the counter.

@@ -34,6 +34,9 @@ namespace ShaderLab::Tests
             CaptureResult next{ CaptureResult::NoFrame };
             std::wstring error{ L"scripted failure" };
             bool createFails{ false };
+            // DirtyRects: whether the fake can say, and what it says.
+            bool reportsRects{ false };
+            std::vector<D2D1_RECT_L> rects;
 
             int created{ 0 };
             int destroyed{ 0 };
@@ -79,6 +82,12 @@ namespace ShaderLab::Tests
             }
 
             ID2D1Image* CurrentImage() const override { return m_image.get(); }
+            bool DirtyRects(std::vector<D2D1_RECT_L>& out) const override
+            {
+                if (!g_script.reportsRects) return false;
+                out = g_script.rects;
+                return true;
+            }
             uint32_t Width() const override { return 4; }
             uint32_t Height() const override { return 2; }
             uint64_t FrameCount() const override { return m_frames; }
@@ -189,17 +198,17 @@ namespace ShaderLab::Tests
                  node().cachedOutput != nullptr && node().runtimeError.empty() && node().name == L"Fake opened");
 
             // A new frame dirties the node and fills the fields.
-            node().dirty = false;
+            node().ClearDirty();
             g_script.next = CaptureResult::NewFrame;
             const bool newFrame = tick();
-            TEST("Live_NewFrameDirtiesNode", newFrame && node().dirty &&
+            TEST("Live_NewFrameDirtiesNode", newFrame && node().IsDirty() &&
                  FieldValue(node(), L"Width") == 4.0f && FieldValue(node(), L"Frames") == 1.0f &&
                  FieldValue(node(), L"FP16") == 1.0f);
 
             // No new frame: the node is left clean.
-            node().dirty = false;
+            node().ClearDirty();
             g_script.next = CaptureResult::NoFrame;
-            TEST("Live_NoFrameLeavesNodeClean", !tick() && !node().dirty);
+            TEST("Live_NoFrameLeavesNodeClean", !tick() && !node().IsDirty());
 
             // Lost: no output, and the reason on the node.
             g_script.next = CaptureResult::Failed;
@@ -234,6 +243,59 @@ namespace ShaderLab::Tests
             graph.RemoveNode(id);
             tick();
             TEST("Live_RemovedNodeDropsSource", g_script.destroyed == destroyedBefore + 1);
+        }
+
+        // A live source that says where each frame wrote (ILiveSource::DirtyRects).
+        SL_TEST_CASE(TestLiveSourceDirtyRects, Tag::Gpu)
+        {
+            std::printf("\n=== Live source dirty rects ===\n");
+            RegisterFakeKind();
+            g_script = {};
+            ID2D1DeviceContext5* dc = g_dc.get();
+
+            Graph::GraphModel graph;
+            SourceNodeFactory factory;
+            const uint32_t id = graph.AddNode(SourceNodeFactory::CreateLiveSourceNode(cFakeMarker, L"Fake"));
+            auto node = [&]() -> EffectNode& { return *graph.FindNode(id); };
+            factory.PrepareSourceNode(node(), dc, g_d3dDevice.get());
+            // A first tick settles the node on the image.
+            factory.TickLiveSources(graph.MutableNodes(), dc);
+            const auto tick = [&](std::vector<D2D1_RECT_L> rects, bool reports = true)
+            {
+                node().ClearDirty();
+                g_script.next = CaptureResult::NewFrame;
+                g_script.reportsRects = reports;
+                g_script.rects = std::move(rects);
+                return factory.TickLiveSources(graph.MutableNodes(), dc, 9);
+            };
+            const auto onlyRect = [&](const D2D1_RECT_L& expected)
+            {
+                const auto& region = node().Region();
+                return node().IsDirty() && region.IsRects() && region.Rects().size() == 1 &&
+                       region.Rects()[0].rect.left == expected.left && region.Rects()[0].rect.top == expected.top &&
+                       region.Rects()[0].rect.right == expected.right && region.Rects()[0].rect.bottom == expected.bottom &&
+                       region.Rects()[0].generation == 9;
+            };
+
+            // Scripted rects arrive clipped to the 4 x 2 image, tagged.
+            const bool rectFrame = tick({ { 1, 0, 3, 1 } });
+            TEST("LiveRects_RectFrameDirtiesTheRect", rectFrame && onlyRect({ 1, 0, 3, 1 }));
+            tick({ { 2, 1, 9, 9 } });
+            TEST("LiveRects_ClippedToImage", onlyRect({ 2, 1, 4, 2 }));
+
+            // Rects that clip to nothing: no frame, the node stays clean.
+            const bool emptyFrame = tick({ { 5, 0, 8, 2 }, { 0, 0, 0, 2 } });
+            TEST("LiveRects_EmptyAfterClipIsNoFrame", !emptyFrame && !node().IsDirty());
+            // No rects at all is no frame either.
+            TEST("LiveRects_NoRectsIsNoFrame", !tick({}) && !node().IsDirty());
+
+            // Rects covering the image: whole.
+            tick({ { 0, 0, 2, 2 }, { 2, 0, 4, 2 } });
+            TEST("LiveRects_CoveringIsWhole", node().IsDirty() && node().Region().IsWhole());
+
+            // A source that cannot say is whole.
+            tick({ { 1, 0, 2, 1 } }, false);
+            TEST("LiveRects_UnknownIsWhole", node().IsDirty() && node().Region().IsWhole());
         }
 
         SL_TEST_CASE(TestLiveSourceFailures, Tag::Gpu)

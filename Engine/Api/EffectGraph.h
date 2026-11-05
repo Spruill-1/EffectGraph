@@ -21,7 +21,8 @@
 //     context->CreateEffectById(CLSID_EffectGraphIctcpToneMapHdrSdr, toneMap.put());
 //     stats->SetInput(0, input.get());
 //     toneMap->SetInput(0, input.get());
-//     toneMap->Bind(L"SourcePeakNits", stats.get(), L"Max");
+//     toneMap->Bind(EffectGraphIctcpToneMapHdrSdr_Parameters_SourcePeakNits, stats.get(),
+//                   EffectGraphLuminanceStatistics_Fields_Max);
 //
 //     context->RealizeTo(toneMap.get(), sdrTexture);      // B8G8R8A8_UNORM_SRGB
 //
@@ -36,8 +37,10 @@
 // only the Windows SDK, and it does not use the C++ standard library or
 // C++/WinRT.
 
+#include <stddef.h>
 #include <d3d11.h>
 #include <d2d1_3.h>
+#include <dxgi1_2.h>
 
 #include "EffectGraphVersion.h"
 
@@ -78,7 +81,68 @@ typedef enum EFFECTGRAPH_CONTEXT_FLAGS
     // serves its bindings from the CPU: always correct, a readback slower.
     // Needs d3dcompiler_47.dll at run time.
     EFFECTGRAPH_CONTEXT_FLAGS_ALLOW_RUNTIME_COMPILE = 0x2,
+    // (1.1) Fail a realize with EFFECTGRAPH_E_FALLBACK_BUILD instead of
+    // running a node on a build that serves a GPU binding from the CPU (the
+    // fallback ALLOW_RUNTIME_COMPILE describes, which reads the analysis
+    // values back every frame). The failing realize draws nothing; with
+    // ASYNC_COMPILE, one whose exact build is still compiling fails with
+    // EFFECTGRAPH_E_COMPILE_PENDING instead.
+    EFFECTGRAPH_CONTEXT_FLAGS_NO_FALLBACK = 0x4,
+    // (1.1) Analysis values reach bound consumers through a deferred commit:
+    // every dispatch of a compute analysis node is read back without waiting,
+    // and on a later realize each bound field is compared with the value its
+    // consumers render with, under the binding's EFFECTGRAPH_COMMIT_POLICY.
+    // Only fields that changed are written, and only their consumers are
+    // drawn again: a value from a dispatch over dirty rects reaches them one
+    // realize later. RealizeToIncremental returns S_FALSE while a readback is
+    // still to be collected.
+    EFFECTGRAPH_CONTEXT_FLAGS_DEFERRED_ANALYSIS_COMMIT = 0x8,
 } EFFECTGRAPH_CONTEXT_FLAGS;
+
+// (1.1) How a bound analysis field reaches its consumers under
+// EFFECTGRAPH_CONTEXT_FLAGS_DEFERRED_ANALYSIS_COMMIT; without the flag every
+// policy behaves as IMMEDIATE. Set per binding (IEffectGraphNode2::
+// SetCommitPolicy); every binding that reads one field must agree, or the
+// consumer fails to evaluate.
+typedef enum EFFECTGRAPH_COMMIT_POLICY
+{
+    // Committed when its readback lands, if any bit of it changed: one realize
+    // late after a dispatch over rects, the same realize after a whole one.
+    EFFECTGRAPH_COMMIT_POLICY_EXACT = 0,
+    // Every dispatch's value at once, as without the flag.
+    EFFECTGRAPH_COMMIT_POLICY_IMMEDIATE = 1,
+    // As EXACT, ignoring a change within the field's change threshold (set by
+    // the effect's author, in the field's own units).
+    EFFECTGRAPH_COMMIT_POLICY_THRESHOLD = 2,
+    // The host commits (IEffectGraphNode2::CommitFields), deciding from the
+    // landed values (TryGetValues). The engine only seeds the field from the
+    // node's first readback.
+    EFFECTGRAPH_COMMIT_POLICY_HOSTED = 3,
+} EFFECTGRAPH_COMMIT_POLICY;
+
+// (1.1) IEffectGraphContext2::RealizeToIncremental.
+typedef enum EFFECTGRAPH_REALIZE_FLAGS
+{
+    EFFECTGRAPH_REALIZE_FLAGS_NONE = 0,
+    // The target holds this node's previous realize: draw only what changed.
+    EFFECTGRAPH_REALIZE_FLAGS_INCREMENTAL = 0x1,
+} EFFECTGRAPH_REALIZE_FLAGS;
+
+// (1.1) A move rect, laid out as DXGI_OUTDUPL_MOVE_RECT so desktop
+// duplication's GetFrameMoveRects array passes straight through: the pixels
+// at SourcePoint, the size of DestinationRect, moved to DestinationRect.
+typedef struct EFFECTGRAPH_MOVE_RECT
+{
+    POINT SourcePoint;
+    RECT DestinationRect;
+} EFFECTGRAPH_MOVE_RECT;
+
+#ifdef __cplusplus
+static_assert(sizeof(EFFECTGRAPH_MOVE_RECT) == sizeof(DXGI_OUTDUPL_MOVE_RECT) &&
+              offsetof(EFFECTGRAPH_MOVE_RECT, SourcePoint) == offsetof(DXGI_OUTDUPL_MOVE_RECT, SourcePoint) &&
+              offsetof(EFFECTGRAPH_MOVE_RECT, DestinationRect) == offsetof(DXGI_OUTDUPL_MOVE_RECT, DestinationRect),
+              "EFFECTGRAPH_MOVE_RECT must match DXGI_OUTDUPL_MOVE_RECT");
+#endif
 
 typedef struct EFFECTGRAPH_CONTEXT_DESC
 {
@@ -123,6 +187,7 @@ typedef struct EFFECTGRAPH_FIELD_INFO
 #define EFFECTGRAPH_E_UNSUPPORTED_FORMAT MAKE_HRESULT(SEVERITY_ERROR, FACILITY_ITF, 0x0E08)   // a texture the graph cannot read or write
 #define EFFECTGRAPH_E_INCOMPATIBLE_EFFECT MAKE_HRESULT(SEVERITY_ERROR, FACILITY_ITF, 0x0E09)  // an effect blob built for another shader contract
 #define EFFECTGRAPH_E_EFFECT_NOT_INCLUDED MAKE_HRESULT(SEVERITY_ERROR, FACILITY_ITF, 0x0E0A)  // a built-in whose header the program did not include
+#define EFFECTGRAPH_E_FALLBACK_BUILD     MAKE_HRESULT(SEVERITY_ERROR, FACILITY_ITF, 0x0E0B)   // (1.1) EFFECTGRAPH_CONTEXT_FLAGS_NO_FALLBACK refused a CPU-served binding
 
 // Effects as a header generated by EffectGraphCompile holds them: the
 // description and each build, with builds left out by the header's #if
@@ -206,7 +271,12 @@ IEffectGraphContext : public IUnknown
 
     // A ShaderLab effect by the class id its generated header defines
     // (CLSID_EffectGraphLuminanceStatistics), so a missing header is a
-    // compile error rather than a run-time one.
+    // compile error rather than a run-time one. (1.1) The nodes every context
+    // has without a header (Working Space, Clock, Numeric Expression, the
+    // parameters) have class ids too, in EffectGraphCoreNodes.h. Each header
+    // also names the effect's parameters and analysis fields for Bind:
+    // EffectGraphLuminanceStatistics_Fields_Max is L"Max",
+    // EffectGraphWorkingSpace_Fields_SdrWhiteNits is L"SdrWhiteNits".
     STDMETHOD(CreateEffectById)(REFCLSID effectId, IEffectGraphNode** node) PURE;
 
     // Any Direct2D effect class registered on the context's factory, by CLSID.
@@ -391,4 +461,147 @@ IEffectGraphValues : public IUnknown
 
     // The first component of a field by name: GetFloat(L"Max", &peak).
     STDMETHOD(GetFloat)(PCWSTR name, float* value) PURE;
+};
+
+// ---- 1.1: dirty rects.
+//
+// A host that knows which parts of an input changed (desktop duplication's
+// dirty and move rects, a compositor's damage) says so, and the context
+// carries the rects through the graph and redraws only them into a target
+// that keeps the rest. QueryInterface for these from the 1.0 interfaces; a
+// 1.0 EffectGraph.dll answers E_NOINTERFACE.
+//
+// The device contract, as for every context: the device was created with
+// D3D11_CREATE_DEVICE_BGRA_SUPPORT; creating the context turned on its
+// multithread protection (ID3D10Multithread), so every immediate-context
+// call the host makes takes that lock; every input texture and realize
+// target is on the context's device. The context writes only its own
+// targets: a surface on another device (a duplication client's) is the
+// host's to copy into and to synchronise.
+//
+// Rects are in texel space, top-left origin, right and bottom exclusive.
+
+// A node: what its output owes a host that redraws only what changed.
+MIDL_INTERFACE("c8f9cd62-f976-44af-9486-4e5ab237695f")
+IEffectGraphNode2 : public IEffectGraphNode
+{
+    // Where this node's output changed since it was last drawn by
+    // RealizeToIncremental, like Direct2D's GetEffectInvalidRectangles: the
+    // rects ingested since the last realize (InvalidateRects, Invalidate,
+    // property changes), carried through the graph, plus anything drawn
+    // since that a realize did not acknowledge. Advisory and read-only: it
+    // runs no frame, lands no readback and changes nothing, so a later
+    // realize may draw more (an analysis value that moves at evaluation).
+    // Forward what RealizeToIncremental reports, not this. *whole is TRUE,
+    // with no rects, when the whole output changed; neither, when nothing
+    // did. *count receives the rect count; a smaller capacity gets none and
+    // HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER).
+    STDMETHOD(GetInvalidRects)(RECT* rects, UINT32 capacity, UINT32* count, BOOL* whole) PURE;
+
+    // Deferred analysis commit (EFFECTGRAPH_CONTEXT_FLAGS_DEFERRED_ANALYSIS_COMMIT),
+    // for a compute analysis node. A host sees three sets of values: GetValues
+    // (the latest dispatch, read back now), the landed values and the
+    // committed ones. Without the flag these return E_NOT_VALID_STATE.
+    //
+    // The newest values that have reached the CPU, without waiting and
+    // without evaluating; S_FALSE and null until a readback has landed.
+    // Readbacks land in a realize or in IEffectGraphContext2::PollReadbacks.
+    STDMETHOD(TryGetValues)(IEffectGraphValues** values) PURE;
+    // Commits host-chosen values to scalar fields bound under
+    // EFFECTGRAPH_COMMIT_POLICY_HOSTED, by index in GetValues' order, one
+    // float each. Applied at the start of the next realize: the field's
+    // consumers are drawn again with it, whole. A value holds until the next
+    // commit. E_INVALIDARG, committing nothing, for any other field.
+    STDMETHOD(CommitFields)(const UINT32* fieldIndices, const float* values, UINT32 count) PURE;
+    // The values bound consumers render with; non-evaluating. S_FALSE and
+    // null until the node's first readback has landed. S_FALSE with values
+    // while a dispatch's results are on the GPU but not yet read back: a
+    // whole dispatch writes every non-Hosted field at once, and an Immediate
+    // field takes every dispatch. Those fields still hold their last commit
+    // here; Hosted fields are current. S_OK once the readback has landed.
+    STDMETHOD(GetCommittedValues)(IEffectGraphValues** values) PURE;
+    // The commit policy of this node's binding of `property` (see Bind).
+    // E_INVALIDARG when the property is not bound.
+    STDMETHOD(SetCommitPolicy)(PCWSTR property, EFFECTGRAPH_COMMIT_POLICY policy) PURE;
+};
+
+// An input node (CreateTextureInput, CreateImageInput). It answers for
+// IEffectGraphNode2 too, and either reaches the other through QueryInterface.
+MIDL_INTERFACE("28f9b611-b610-4415-b631-46bf8d512821")
+IEffectGraphInput2 : public IEffectGraphInput
+{
+    // Something else rewrote these rects of the texture or image: what reads
+    // them is evaluated again there. Rects are clipped to the texture (an
+    // image input: to its bounds). S_FALSE, changing nothing, when count is
+    // 0 or every rect is empty after clipping; rects that together cover
+    // the texture are the whole of it. Invalidate and SetTexture stay whole.
+    STDMETHOD(InvalidateRects)(const RECT* rects, UINT32 count) PURE;
+
+    // Something else moved these pixels of the texture: each move's
+    // destination now holds what its source held (desktop duplication's
+    // GetFrameMoveRects, passed straight through). Applied before this
+    // realize's rects, in order. Where every node from the input to the
+    // realized node is a shift-invariant pixel shader, an incremental realize
+    // copies the moved pixels within its target instead of drawing them
+    // again; anywhere else, a move is a dirty rect at its destination. Each
+    // destination is clipped to the texture, its source shifted with it; a
+    // move whose source then leaves the texture is a dirty rect at its
+    // destination, and is not reported in `moved`. S_FALSE, changing
+    // nothing, when count is 0 or every move is empty after clipping. Rects
+    // and moves handed in before the call, since the last realize, count as
+    // earlier: a move whose source they changed is drawn, not copied. A
+    // second call before a realize turns the moves of the first into dirty
+    // rects at their destinations.
+    STDMETHOD(MoveRects)(const EFFECTGRAPH_MOVE_RECT* moves, UINT32 count) PURE;
+};
+
+MIDL_INTERFACE("265e45f3-4f92-4319-8e64-b05e32f3ff4d")
+IEffectGraphContext2 : public IEffectGraphContext
+{
+    // RealizeTo for a target the host keeps between frames. With
+    // EFFECTGRAPH_REALIZE_FLAGS_INCREMENTAL the host asserts that `target`
+    // holds this node's previous realize: the context draws only the rects
+    // that changed since then, without clearing, and leaves every other
+    // pixel as it was. Without the flag, on the node's first realize, into
+    // a target other than its last one (or one another realize wrote since),
+    // after MoveToDevice, or when everything changed, it clears and draws
+    // the whole target, reported as one rect covering it.
+    //
+    // `drawn` receives the rects drawn, at most drawnCapacity (at least 1;
+    // more rects than that are drawn as their bounding box); *drawnCount
+    // their number, 0 when nothing changed. `moved` receives, for
+    // forwarding before `drawn`, every move (MoveRects, as clipped) handed
+    // to an input the node reads since its last successful realize, in
+    // order: those copied within the target, and those drawn instead, whose
+    // destinations are in `drawn`. A whole draw reports them too. Only moves
+    // inside the target are reported; one whose source or destination
+    // leaves it is drawn. More moves than movedCapacity (0, with `moved` and
+    // `movedCount` null, included) are all drawn instead, and none is
+    // reported; a movedCapacity above 0 needs both `moved` and `movedCount`
+    // (E_INVALIDARG otherwise). Moves are held for at most 1024 region
+    // generations (every realize advances one, and so does a MoveRects call
+    // after anything else was handed in since the last): a node not
+    // realized successfully for that long, while a move on an input it reads
+    // is pending, loses its moves, and its next realize draws whole and
+    // reports none. Moves on inputs it does not read never cost it a whole draw.
+    //
+    // S_FALSE: an analysis readback the realize scheduled has not been
+    // collected yet (EFFECTGRAPH_CONTEXT_FLAGS_DEFERRED_ANALYSIS_COMMIT); call
+    // again, with or without new rects, to collect and commit it. A call
+    // with nothing new does not wait for the GPU, and returns S_FALSE again
+    // while the copy is still in flight. The target is current under
+    // S_OK and S_FALSE. A failed realize leaves it not current, possibly
+    // part drawn; the next one that succeeds redraws everything still
+    // pending.
+    STDMETHOD(RealizeToIncremental)(IEffectGraphNode* node, ID3D11Texture2D* target, UINT32 flags,
+                                    RECT* drawn, UINT32 drawnCapacity, UINT32* drawnCount,
+                                    EFFECTGRAPH_MOVE_RECT* moved, UINT32 movedCapacity, UINT32* movedCount) PURE;
+
+    // Collects and commits analysis readbacks that have landed, drawing
+    // nothing and waiting for nothing: what the start of a realize does. A
+    // host that decides Hosted commits calls it before TryGetValues, so a
+    // value dispatched in one realize is committed and drawn in the next.
+    // S_FALSE while a readback is still in flight; E_NOT_VALID_STATE without
+    // EFFECTGRAPH_CONTEXT_FLAGS_DEFERRED_ANALYSIS_COMMIT.
+    STDMETHOD(PollReadbacks)() PURE;
 };

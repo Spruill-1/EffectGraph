@@ -38,6 +38,22 @@ keeps only its per-pixel accumulate, its `Combine` and its `Result` packing.
 Each macro is a braced block, so its loop variables cannot collide with the
 caller's (fxc scopes a `for` initialiser to the enclosing block).
 
+Since Channel Statistics 3, Luminance Statistics 7 and Chromaticity Statistics 3
+the three reduce over **cells** (`SHADERLAB_REDUCE_CELLS`, decision #256): input 0
+is cut into an 8 x 8 grid (`ShaderLabCellRect(cell, width, height)`: column `cx`
+spans `cx * W / 8` to `(cx + 1) * W / 8`, rows alike), each group reduces one cell
+(`ShaderLabReduceCell(Gid.x)` names it from the `_SLReduceCells` cbuffer at `b2`)
+into that cell's partial slot, and the last group to finish folds all 64 slots
+(`SlotCount`) in slot order. The slots live above the cleared head of the
+persistent scratch buffer, so a cell nobody recomputes keeps its partial. When
+the evaluator knows the input changed only in rects (`EvaluatorOptions::
+incrementalReductions`, on), `D3D11ComputeRunner` dispatches only the cells the
+rects touch, and the fold reads the other cells' kept partials. Every field is
+bit-identical to a dispatch that recomputed all 64, because each thread walks
+its cell in the same order (32 pixels at a time in both axes) and the fold
+order is fixed. `ShaderLabMergeHistogramSlots` merges the cells' histograms.
+Gamut Coverage and CIE Histogram keep their reductions.
+
 ## Shader Pattern
 ```hlsl
 cbuffer Constants : register(b0) {

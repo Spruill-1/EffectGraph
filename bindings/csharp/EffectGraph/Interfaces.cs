@@ -19,6 +19,22 @@ public enum ContextFlags
     None = 0,
     AsyncCompile = 0x1,
     AllowRuntimeCompile = 0x2,
+    // 1.1: a frame that would run a fallback build fails with
+    // HResults.FallbackBuild and draws nothing.
+    NoFallback = 0x4,
+    // 1.1: bound analysis fields reach their consumers through a deferred
+    // commit, under each binding's CommitPolicy.
+    DeferredAnalysisCommit = 0x8,
+}
+
+// EFFECTGRAPH_COMMIT_POLICY (1.1): how a bound field reaches its consumers
+// under ContextFlags.DeferredAnalysisCommit.
+public enum CommitPolicy
+{
+    Exact = 0,
+    Immediate = 1,
+    Threshold = 2,
+    Hosted = 3,
 }
 
 public enum FieldType
@@ -140,4 +156,105 @@ public interface IEffectGraphValues
     FieldInfo GetFieldInfo(uint index);
     void GetFloats(uint index, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] float[] values, uint valueCount);
     float GetFloat([MarshalAs(UnmanagedType.LPWStr)] string name);
+}
+
+// ---- EffectGraph 1.1: dirty rects. New interfaces, reached by casting (QueryInterface)
+// a 1.0 one; an object that does not implement one throws InvalidCastException
+// (E_NOINTERFACE).
+
+// RealizeToIncremental's flags.
+[Flags]
+public enum RealizeFlags : uint
+{
+    None = 0,
+    // The target holds this node's previous realize: draw only what changed.
+    Incremental = 0x1,
+}
+
+// RECT: texel space, top-left origin, right and bottom exclusive.
+[StructLayout(LayoutKind.Sequential)]
+public struct Rect
+{
+    public int Left, Top, Right, Bottom;
+    public Rect(int left, int top, int right, int bottom) { Left = left; Top = top; Right = right; Bottom = bottom; }
+}
+
+// EFFECTGRAPH_MOVE_RECT, laid out as DXGI_OUTDUPL_MOVE_RECT.
+[StructLayout(LayoutKind.Sequential)]
+public struct MoveRect
+{
+    public int SourceX, SourceY;
+    public Rect Destination;
+}
+
+[ComImport, Guid("c8f9cd62-f976-44af-9486-4e5ab237695f"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IEffectGraphNode2
+{
+    // ID2D1Properties and IEffectGraphNode, which this interface extends:
+    // reach them through IEffectGraphNode on the same object.
+    [PreserveSig] uint _GetPropertyCount();
+    void _GetPropertyName(); void _GetPropertyNameLength(); void _GetType(); void _GetPropertyIndex();
+    void _SetValueByName(); void _SetValue(); void _GetValueByName(); void _GetValue(); void _GetValueSize();
+    void _GetSubProperties();
+    void _GetContext(); void _SetInput(); void _GetInput(); void _GetInputCount(); void _Bind(); void _Unbind();
+    void _GetValues(); void _GetValuesBuffer(); void _GetErrorLength(); void _GetError(); void _GetNameLength();
+    void _GetName(); void _SetName();
+
+    // S_OK, or HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER) with count set
+    // when capacity is too small. whole is nonzero when everything changed.
+    [PreserveSig] int GetInvalidRects([Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] Rect[]? rects,
+                                      uint capacity, out uint count, out int whole);
+    // Deferred analysis commit (ContextFlags.DeferredAnalysisCommit); without
+    // it, E_NOT_VALID_STATE. TryGetValues and GetCommittedValues give S_FALSE
+    // and null until there is something to return. GetCommittedValues also
+    // gives S_FALSE with values while a dispatch's results are not yet read
+    // back (see EffectGraph.h).
+    [PreserveSig] int TryGetValues(out IEffectGraphValues? values);
+    [PreserveSig] int CommitFields([MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] uint[] fieldIndices,
+                                   [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] float[] values, uint count);
+    [PreserveSig] int GetCommittedValues(out IEffectGraphValues? values);
+    // E_INVALIDARG when the property is not bound.
+    [PreserveSig] int SetCommitPolicy([MarshalAs(UnmanagedType.LPWStr)] string property, CommitPolicy policy);
+}
+
+[ComImport, Guid("28f9b611-b610-4415-b631-46bf8d512821"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IEffectGraphInput2
+{
+    // ID2D1Properties, IEffectGraphNode and IEffectGraphInput, which this
+    // interface extends: reach them through those interfaces on the same object.
+    [PreserveSig] uint _GetPropertyCount();
+    void _GetPropertyName(); void _GetPropertyNameLength(); void _GetType(); void _GetPropertyIndex();
+    void _SetValueByName(); void _SetValue(); void _GetValueByName(); void _GetValue(); void _GetValueSize();
+    void _GetSubProperties();
+    void _GetContext(); void _SetInput(); void _GetInput(); void _GetInputCount(); void _Bind(); void _Unbind();
+    void _GetValues(); void _GetValuesBuffer(); void _GetErrorLength(); void _GetError(); void _GetNameLength();
+    void _GetName(); void _SetName();
+    void _Invalidate(); void _SetTexture(); void _SetImage();
+
+    // S_FALSE, changing nothing, when every rect is empty after clipping.
+    [PreserveSig] int InvalidateRects([MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] Rect[] rects, uint count);
+    // Before the frame's InvalidateRects; S_FALSE when every move clips to nothing.
+    [PreserveSig] int MoveRects([MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] MoveRect[] moves, uint count);
+}
+
+[ComImport, Guid("265e45f3-4f92-4319-8e64-b05e32f3ff4d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IEffectGraphContext2
+{
+    // IEffectGraphContext, which this interface extends: reach it through
+    // IEffectGraphContext on the same object.
+    void _CreateEffect(); void _CreateEffectById(); void _CreateD2DEffect(); void _CreateTextureInput();
+    void _CreateImageInput(); void _RemoveNode(); void _Realize(); void _RealizeTo(); void _GetD3DDevice();
+    void _GetD2DDevice(); void _MoveToDevice();
+
+    // S_OK or S_FALSE (an analysis readback not collected yet, under
+    // ContextFlags.DeferredAnalysisCommit). drawn gets at most drawnCapacity rects (at
+    // least 1); moved may be null.
+    [PreserveSig] int RealizeToIncremental(IEffectGraphNode node, IntPtr target, RealizeFlags flags,
+                                           [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 4)] Rect[] drawn,
+                                           uint drawnCapacity, out uint drawnCount,
+                                           [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 7)] MoveRect[]? moved,
+                                           uint movedCapacity, out uint movedCount);
+    // Collects and commits landed readbacks, drawing nothing. S_FALSE while one
+    // is in flight; E_NOT_VALID_STATE without ContextFlags.DeferredAnalysisCommit.
+    [PreserveSig] int PollReadbacks();
 }

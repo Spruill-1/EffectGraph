@@ -178,8 +178,10 @@ namespace ShaderLab::Effects
         D2D1_RECT_L /*invalidInputRect*/,
         D2D1_RECT_L* invalidOutputRect) const
     {
-        // Return the stored input rect, or empty if not yet initialized.
-        *invalidOutputRect = m_inputRect;
+        if (!invalidOutputRect) return E_INVALIDARG;
+        // A compute shader may read any input texel for any output texel:
+        // all of the output.
+        *invalidOutputRect = cInfiniteRectL;
         return S_OK;
     }
 

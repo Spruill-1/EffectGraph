@@ -107,6 +107,7 @@ namespace ShaderLab::Rendering::Evaluator
             // rest are lookup tables and reserved analysis pins.
             pixelImpl->SetImageInputCount(GeometricInputCount(node.customEffect.value()));
             pixelImpl->SetSubRectInputDemand(m_frameOptions.subRectInputDemand);
+            pixelImpl->SetPointImageFilter(m_frameOptions.pointImageFilter);
             // A generator needs its size before its first apply.
             if (node.customEffect->inputNames.empty())
             {

@@ -4,6 +4,7 @@
 #include "NodeType.h"
 #include "PropertyValue.h"
 #include "NodeContracts.h"
+#include "DirtyRegion.h"
 
 namespace ShaderLab::Graph
 {
@@ -166,6 +167,12 @@ namespace ShaderLab::Graph
         // Default false: the field is CPU-only.
         bool gpuPublish{ false };
 
+        // The change a binding under CommitPolicy::Threshold ignores, in the
+        // field's own units: a landed value commits only when some component
+        // differs from the committed one by more than this. 0 commits any
+        // change, as CommitPolicy::Exact does. Declared by the effect's author.
+        float changeThreshold{ 0.0f };
+
         uint32_t pixelCount() const { return AnalysisFieldPixelCount(type, arrayLength); }
     };
 
@@ -301,6 +308,16 @@ namespace ShaderLab::Graph
         // Unconnected inputs get the 1x1 zero placeholder, and an `InputMask`
         // cbuffer field, if declared, receives the connected pins (bit i = pin i).
         bool variadicInputs{ false };
+
+        // The effect's output moves with its image input: output pixel N is
+        // a function of input pixel N and the effect's parameters, wherever N
+        // is, so a moved input region renders as the moved output (a pixel
+        // shader with one image pin). The author declares it; an effect whose
+        // only dependence on position is dither may, since a moved region
+        // then differs from a fresh render by the dither alone. A move rect
+        // through it stays a move (Graph::MapRegion); through anything else
+        // it becomes a dirty rect at its destination.
+        bool shiftInvariant{ false };
         std::vector<ParameterDefinition> parameters;    // Declared cbuffer parameters.
 
         // ShaderLab built-in effect identity (empty for user-authored effects).
@@ -373,11 +390,54 @@ namespace ShaderLab::Graph
         uint32_t sourceComponent{ 0 };  // 0-3 for .xyzw within that element
     };
 
+    // How a value from a dispatch over dirty rects reaches the consumers
+    // bound to its field (EvaluatorOptions::deferredAnalysisCommit; with it
+    // off every policy behaves as Immediate). The policy belongs to the
+    // (producer, field): every binding reading the field must declare the
+    // same one, or those consumers fail to resolve.
+    enum class CommitPolicy : uint8_t
+    {
+        // The engine commits a landed value that differs bit for bit from
+        // the committed one, a frame after the dispatch. The default.
+        Exact = 0,
+        // The value reaches the consumers the frame it is made, through the
+        // producer's lane-3 copy: the behaviour without deferred commit.
+        Immediate = 1,
+        // As Exact, ignoring a change within the field's changeThreshold.
+        Threshold = 2,
+        // The host commits (IEffectGraphNode2::CommitFields), deciding from
+        // the landed value (TryGetValues); the engine only seeds the field.
+        Hosted = 3,
+    };
+
+    // The graph JSON's names for the policies.
+    inline const wchar_t* CommitPolicyTag(CommitPolicy policy)
+    {
+        switch (policy)
+        {
+        case CommitPolicy::Immediate: return L"immediate";
+        case CommitPolicy::Threshold: return L"threshold";
+        case CommitPolicy::Hosted:    return L"hosted";
+        default:                      return L"exact";
+        }
+    }
+
+    inline std::optional<CommitPolicy> CommitPolicyFromTag(std::wstring_view tag)
+    {
+        for (const auto policy : { CommitPolicy::Exact, CommitPolicy::Immediate, CommitPolicy::Threshold,
+                                   CommitPolicy::Hosted })
+            if (tag == CommitPolicyTag(policy)) return policy;
+        return std::nullopt;
+    }
+
     // Binds a downstream node's property to upstream analysis output values.
     // Supports per-component routing: each destination component can come from
     // a different source field/node/component.
     struct PropertyBinding
     {
+        // Saved in the graph JSON as "commitPolicy" when not Exact.
+        CommitPolicy commitPolicy{ CommitPolicy::Exact };
+
         // Per-component sources. Size matches destination component count:
         //   float → 1, float2 → 2, float3 → 3, float4 → 4
         // Use nullopt for unbound components (keeps authored default).
@@ -502,8 +562,31 @@ namespace ShaderLab::Graph
         // with the generic shader meanwhile. Not serialized.
         uint32_t variantsCompiling{ 0 };
 
-        // Dirty flag -- set when properties change, cleared after evaluation.
-        bool dirty{ true };
+        // Whether, and where, the node's output changed since it was last
+        // evaluated: set when anything it renders changes, cleared by its
+        // visit. Kept behind these calls so the only way to leave a node dirty
+        // in part is to name the part: MarkDirty() is the whole node, and a
+        // region (MarkDirty(region)) unions into one already pending.
+        bool IsDirty() const { return m_dirty; }
+        // None when the node is clean.
+        const DirtyRegion& Region() const { return m_region; }
+        void MarkDirty()
+        {
+            m_dirty = true;
+            m_region = DirtyRegion::Whole();
+        }
+        void MarkDirty(const DirtyRegion& region)
+        {
+            if (region.IsNone()) return;
+            if (!m_dirty) m_region = region;
+            else m_region.Union(region);
+            m_dirty = true;
+        }
+        void ClearDirty()
+        {
+            m_dirty = false;
+            m_region = {};
+        }
 
         // Clock node: time-based animation source.
         bool IsClock() const
@@ -549,6 +632,10 @@ namespace ShaderLab::Graph
         // (FrameExecutor): true if this node feeds something the host demands.
         // The evaluator skips nodes where needed == false.
         bool needed{ true };
+
+    private:
+        bool m_dirty{ true };
+        DirtyRegion m_region{ DirtyRegion::Whole() };
     };
 
     // True when pred(sourceNodeId) holds for any node one of `node`'s

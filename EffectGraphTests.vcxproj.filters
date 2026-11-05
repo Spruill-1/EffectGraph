@@ -31,6 +31,9 @@
     <ClInclude Include="Tests\TestCommon.h">
       <Filter>Tests</Filter>
     </ClInclude>
+    <ClInclude Include="Tests\Rendering\DdaStageSim.h">
+      <Filter>Tests\Rendering</Filter>
+    </ClInclude>
     <ClInclude Include="Tests\TestSupport.h">
       <Filter>Tests</Filter>
     </ClInclude>
@@ -62,6 +65,9 @@
       <Filter>Tests\Api</Filter>
     </ClCompile>
     <ClCompile Include="Tests\Effects\BuiltInEffectTests.cpp">
+      <Filter>Tests\Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Tests\Effects\D2DParityTests.cpp">
       <Filter>Tests\Effects</Filter>
     </ClCompile>
     <ClCompile Include="Tests\Effects\BytecodeCacheTests.cpp">
@@ -100,6 +106,9 @@
     <ClCompile Include="Tests\Graph\GraphModelTests.cpp">
       <Filter>Tests\Graph</Filter>
     </ClCompile>
+    <ClCompile Include="Tests\Graph\DirtyRegionTests.cpp">
+      <Filter>Tests\Graph</Filter>
+    </ClCompile>
     <ClCompile Include="Tests\Graph\GraphPolicyTests.cpp">
       <Filter>Tests\Graph</Filter>
     </ClCompile>
@@ -119,6 +128,12 @@
       <Filter>Tests\Math</Filter>
     </ClCompile>
     <ClCompile Include="Tests\Rendering\ComputeTests.cpp">
+      <Filter>Tests\Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Tests\Rendering\DdaReplayTests.cpp">
+      <Filter>Tests\Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="Tests\Rendering\DdaStageSim.cpp">
       <Filter>Tests\Rendering</Filter>
     </ClCompile>
     <ClCompile Include="Tests\Rendering\EvaluatorTests.cpp">

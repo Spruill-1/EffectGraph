@@ -104,13 +104,57 @@ namespace ShaderLab::Rendering
 
         // Newest async readback that has completed, without waiting. Returns
         // false when nothing new has landed. Older completed copies are
-        // discarded in favour of the newest.
-        bool PollReadback(std::vector<float>& out);
+        // discarded in favour of the newest. `seq`, when given, receives the
+        // delivered copy's sequence number (LastScheduledSeq at its dispatch).
+        // A Map that fails for good retires the slot and every older one:
+        // false, with `seq` set and LastPollResult the failure.
+        bool PollReadback(std::vector<float>& out, uint64_t* seq = nullptr);
+        // The last PollReadback's Map failure, or S_OK.
+        HRESULT LastPollResult() const { return m_lastPollResult; }
+        // Test hook: the next completed slot PollReadback finds fails its Map.
+        void FailNextPollForTest() { m_failNextPoll = true; }
+        // The newest pending async readback, waiting for it; every older one
+        // is retired. False when none is pending or the Map fails.
+        bool CollectNewestBlocking(std::vector<float>& out, uint64_t* seq = nullptr);
         bool HasPendingReadback() const
         {
             for (const auto& s : m_staging) if (s.pending) return true;
             return false;
         }
+        // The sequence number of the last async readback scheduled; 0 before any.
+        uint64_t LastScheduledSeq() const { return m_lastScheduledSeq; }
+        // Bumped whenever the result buffer, staging ring and lane-3 texture
+        // are recreated (a new result count): values recorded against the old
+        // ones no longer describe what the texture holds.
+        uint64_t BufferGeneration() const { return m_bufferGeneration; }
+
+        // What the next dispatch's lane-3 copy pass writes. All: every texel
+        // (the default, and always the first fill). Masked: the texels whose
+        // bit is set in `keep` (bit i = texel i). None: no copy pass. Reset
+        // after each dispatch.
+        enum class TextureCopy { All, Masked, None };
+        void SetTextureCopy(TextureCopy mode, std::vector<uint32_t> keep = {})
+        {
+            m_textureCopy = mode;
+            m_copyKeep = std::move(keep);
+        }
+        // The last dispatch asked for a copy pass that did not run (the
+        // masked shader or its keep buffer could not be created): the texture
+        // still holds what it held before.
+        bool TextureCopyFailed() const { return m_textureCopyFailed; }
+        // Test hook: the next copy pass fails as if its resources could not
+        // be created.
+        void FailNextTextureCopyForTest() { m_failNextTextureCopy = true; }
+        // Test hook: the next recorded dispatch fails to close into a command
+        // list, as FinishCommandList would, so none of it runs.
+        void FailNextSubmitForTest() { m_failNextSubmit = true; }
+        // Writes float4 texels of the lane-3 texture directly, on the
+        // immediate context (a boxed UpdateSubresource on a deferred context
+        // reads the wrong source on drivers without command lists). Creates
+        // the texture when a consumer wants it; a write of every texel marks
+        // it filled.
+        HRESULT WriteAnalysisTexels(uint32_t firstTexel, const float* float4s, uint32_t texelCount);
+        bool AnalysisTextureFilled() const { return m_analysisTex && m_analysisTexFilled; }
 
         // Benchmark-only A/B mode: issue dispatches call by call on the shared
         // immediate context instead of recording them on the private deferred
@@ -129,6 +173,31 @@ namespace ShaderLab::Rendering
 
         // True when the installed shader declares SHADERLAB_IMAGE_PASS.
         bool UsesImagePass() const { return m_usesImagePass; }
+
+        // Cell reductions (SHADERLAB_REDUCE_CELLS). The rects input 0 changed
+        // in since this runner's last dispatch, in its texel space, for the
+        // NEXT dispatch only; without them (or `count` 0 with null) every cell
+        // is recomputed. The runner recomputes only the cells they touch when
+        // the cells' partials describe everything else: the last dispatch ran
+        // the same shader on the same input texture, size and constants, with
+        // the same scratch buffer. Anything else recomputes every cell.
+        void SetCellRects(const RECT* rects, uint32_t count)
+        {
+            m_cellRectsGiven = rects != nullptr;
+            m_cellRects.assign(rects, rects ? rects + count : rects);
+        }
+        bool UsesReduceCells() const { return m_usesReduceCells; }
+        // Cells the last dispatch recomputed, out of LastCellsTotal (0 and 0
+        // for a shader that is not a cell reduction).
+        uint32_t LastCellsDispatched() const { return m_lastCellsDispatched; }
+        uint32_t LastCellsTotal() const { return m_lastCellsTotal; }
+        // The cells the last dispatch recomputed (bit c = cell c), and
+        // whether it was handed rects at all (SetCellRects with non-null).
+        uint64_t LastCellMask() const { return m_lastCellMask; }
+        bool LastCellRectsGiven() const { return m_lastCellRectsGiven; }
+        // Bit c set: cell c (row-major in the kReduceCellColumns x
+        // kReduceCellRows grid over a width x height image) intersects a rect.
+        static uint64_t CellMaskForRects(const RECT* rects, uint32_t count, uint32_t width, uint32_t height);
 
         // SRV onto the result structured buffer. Used by upstream
         // effects implementing IEngineComputeOutput to expose their
@@ -178,8 +247,10 @@ namespace ShaderLab::Rendering
         bool m_immediateForBenchmark{ false };
 
         // Close what has been recorded on m_context into a command list and
-        // execute it on the immediate context. No-op in immediate mode.
-        void SubmitRecorded();
+        // execute it on the immediate context. No-op (S_OK) in immediate
+        // mode; the FinishCommandList failure otherwise, with nothing run.
+        HRESULT SubmitRecorded();
+        bool m_failNextSubmit{ false };
         winrt::com_ptr<ID3D11ComputeShader> m_shader;
         std::vector<uint8_t> m_bytecode;
 
@@ -199,6 +270,8 @@ namespace ShaderLab::Rendering
         static constexpr size_t kStagingSlots = 3;
         std::array<StagingSlot, kStagingSlots> m_staging{};
         uint64_t m_stagingSeq{ 0 };
+        uint64_t m_lastScheduledSeq{ 0 };
+        uint64_t m_bufferGeneration{ 0 };
         // Parameter cbuffer: the runner's Width/Height, then the user
         // constants. 256 bytes unless the constants need more.
         static constexpr UINT cRunnerConstantBytes = 8;
@@ -221,6 +294,18 @@ namespace ShaderLab::Rendering
         winrt::com_ptr<ID3D11ComputeShader>       m_analysisCopyShader;
         winrt::com_ptr<ID3D11Buffer>              m_copyConstants;   // the copy pass's count
         bool m_analysisTexFilled{ false };
+        // The masked copy: the same pass, writing only the texels whose bit
+        // is set in a buffer of keep bits.
+        winrt::com_ptr<ID3D11ComputeShader>       m_maskedCopyShader;
+        winrt::com_ptr<ID3D11Buffer>              m_keepBuffer;
+        winrt::com_ptr<ID3D11ShaderResourceView>  m_keepSrv;
+        std::vector<uint32_t>                     m_keepUploaded;
+        TextureCopy           m_textureCopy{ TextureCopy::All };
+        std::vector<uint32_t> m_copyKeep;
+        bool m_textureCopyFailed{ false };
+        bool m_failNextTextureCopy{ false };
+        // Uploads `keep` (padded to the texel count) for the masked copy.
+        bool EnsureKeepMask(const std::vector<uint32_t>& keep);
 
         std::wstring m_compileError;
 
@@ -231,6 +316,32 @@ namespace ShaderLab::Rendering
         winrt::com_ptr<ID3D11UnorderedAccessView> m_scratchUAV;       // whole buffer
         winrt::com_ptr<ID3D11UnorderedAccessView> m_scratchHeadUAV;   // cleared head
         bool EnsureScratch();
+
+        // Cell reductions. What the cells' partials were computed from: a
+        // dispatch with a different key recomputes every cell.
+        struct CellKey
+        {
+            ID3D11ComputeShader* shader{ nullptr };   // compared, never dereferenced
+            ID3D11Texture2D*     input{ nullptr };
+            ID3D11Buffer*        scratch{ nullptr };
+            UINT width{ 0 }, height{ 0 };
+            DXGI_FORMAT format{ DXGI_FORMAT_UNKNOWN };
+            std::vector<BYTE> constants;
+            bool operator==(const CellKey&) const = default;
+        };
+        bool m_usesReduceCells{ false };
+        winrt::com_ptr<ID3D11Buffer> m_cellConstants;
+        std::vector<RECT> m_cellRects;
+        bool m_cellRectsGiven{ false };
+        std::optional<CellKey> m_cellKey;
+        uint32_t m_lastCellsDispatched{ 0 };
+        uint32_t m_lastCellsTotal{ 0 };
+        uint64_t m_lastCellMask{ 0 };
+        bool m_lastCellRectsGiven{ false };
+        // The cells this dispatch recomputes, written into _SLReduceCells.
+        HRESULT PlanCells(ID3D11Texture2D* input0Texture, const D3D11_TEXTURE2D_DESC& input0,
+                          const std::vector<BYTE>& cbufferData, const std::vector<RECT>& rects, bool rectsGiven,
+                          uint32_t& groups);
 
         // Two-pass image contract (see ShaderLabParamsHlsl.h).
         bool m_usesImagePass{ false };
@@ -246,6 +357,8 @@ namespace ShaderLab::Rendering
         void ReflectContracts();
         HRESULT m_lastDispatchResult{ S_OK };
         HRESULT m_lastReadbackResult{ S_OK };
+        HRESULT m_lastPollResult{ S_OK };
+        bool m_failNextPoll{ false };
 
         // Result buffer, its views and the staging ring, for resultCount float4s.
         HRESULT EnsureBuffers(uint32_t resultCount);
@@ -265,7 +378,8 @@ namespace ShaderLab::Rendering
                        const D3D11_TEXTURE2D_DESC& input0, const D3D11_TEXTURE2D_DESC& output,
                        uint32_t dispatchX, uint32_t dispatchY, uint32_t dispatchZ,
                        const std::vector<ID3D11ShaderResourceView*>& extraSrvs,
-                       const std::vector<uint32_t>& extraSrvSlots);
+                       const std::vector<uint32_t>& extraSrvSlots,
+                       uint32_t cellGroups);
         // Copies the result buffer to a staging slot on `context`; nullptr
         // if none exists.
         StagingSlot* ScheduleReadback(ID3D11DeviceContext* context);
@@ -274,13 +388,16 @@ namespace ShaderLab::Rendering
         // every dispatch; returns false if the lane is unavailable.
         bool EnsureAnalysisTexture();
         // Buffer -> texture copy dispatch. Runs only when the lane is
-        // wanted AND available.
-        void PublishAnalysisTexture();
+        // wanted AND available; with `keep`, only those texels (a texture
+        // not yet filled is always copied whole). False when it did not run.
+        bool PublishAnalysisTexture(const std::vector<uint32_t>* keep = nullptr);
 
     public:
-        // Writes float4 elements into the results between dispatches, and
-        // refreshes the pixel-shader copy when one is published.
-        HRESULT WriteResults(uint32_t firstElement, const float* float4s, uint32_t elementCount);
+        // Writes float4 elements into the results between dispatches and,
+        // with `publishTexture`, refreshes the pixel-shader copy when one is
+        // published (under a deferred commit the caller writes its texels).
+        HRESULT WriteResults(uint32_t firstElement, const float* float4s, uint32_t elementCount,
+                             bool publishTexture = true);
         // Blocking read of the results the last dispatch left, for a caller
         // that dispatched with Readback::None and then found it needs them.
         HRESULT ReadResults(std::vector<float>& out);

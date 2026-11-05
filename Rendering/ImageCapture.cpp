@@ -97,7 +97,7 @@ namespace ShaderLab::Rendering
         const auto* node = graph.FindNode(nodeId);
         if (!node) { report(NodeImageStatus::NotFound); return nullptr; }
         // A dirty node's cachedOutput may already be released by the evaluator.
-        if (!node->cachedOutput || node->dirty) { report(NodeImageStatus::NotReady); return nullptr; }
+        if (!node->cachedOutput || node->IsDirty()) { report(NodeImageStatus::NotReady); return nullptr; }
         if (!node->inputPins.empty() && graph.GetInputEdges(nodeId).empty())
         {
             report(NodeImageStatus::NotReady);

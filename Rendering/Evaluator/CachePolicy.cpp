@@ -78,7 +78,7 @@ namespace ShaderLab::Rendering::Evaluator
         for (auto& node : graph.MutableNodes())
         {
             node.cachedOutput = nullptr;
-            node.dirty = true;
+            node.MarkDirty();
             node.variantsCompiling = 0;
         }
     }
@@ -97,9 +97,11 @@ namespace ShaderLab::Rendering::Evaluator
         if (auto* node = graph.FindNode(nodeId))
         {
             node->cachedOutput = nullptr;
-            node->dirty = true;
+            node->MarkDirty();
             node->variantsCompiling = 0;
         }
+        // Its lane-3 view went with its effect: whatever reads it plans again.
+        MarkBindingConsumersDirty(graph, nodeId);
     }
 
     void EvaluatorCore::UpdateNodeShader(uint32_t nodeId, const EffectNode& node)

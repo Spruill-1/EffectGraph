@@ -191,6 +191,43 @@ namespace ShaderLab::Effects
             return part;
         }
 
+        // MacroPart with the case kept: "Nonzero%" -> Nonzero, "Peak (nits)" -> Peak_nits.
+        std::string MemberPart(std::wstring_view text)
+        {
+            std::string part;
+            bool gap = false;
+            for (wchar_t ch : text)
+            {
+                const bool keep = (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') || (ch >= L'0' && ch <= L'9');
+                if (!keep) { gap = true; continue; }
+                if (gap && !part.empty()) part.push_back('_');
+                gap = false;
+                part.push_back(static_cast<char>(ch));
+            }
+            return part;
+        }
+
+        // `text` as the body of a C++ wide string literal.
+        std::string WideLiteral(std::wstring_view text)
+        {
+            std::string literal;
+            for (size_t i = 0; i < text.size(); ++i)
+            {
+                const wchar_t ch = text[i];
+                if (ch == L'"' || ch == L'\\') { literal.push_back('\\'); literal.push_back(static_cast<char>(ch)); }
+                else if (ch >= 0x20 && ch < 0x7F) literal.push_back(static_cast<char>(ch));
+                else if (ch < 0xA0) literal += std::format("\\{:03o}", static_cast<unsigned>(ch));
+                else if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < text.size() && text[i + 1] >= 0xDC00 && text[i + 1] <= 0xDFFF)
+                {
+                    const uint32_t code = 0x10000u + ((uint32_t(ch) - 0xD800u) << 10) + (uint32_t(text[i + 1]) - 0xDC00u);
+                    literal += std::format("\\U{:08X}", code);
+                    ++i;
+                }
+                else literal += std::format("\\u{:04X}", static_cast<unsigned>(ch));
+            }
+            return literal;
+        }
+
         // The registration both forms share. `owner`, when set, keeps the
         // memory the records point into alive for the lazy loads.
         EffectBlobRegistration Register(const EffectBlobParts& parts, std::shared_ptr<const std::vector<uint8_t>> owner)
@@ -297,6 +334,51 @@ namespace ShaderLab::Effects
         return macro;
     }
 
+    std::string EffectMemberName(std::wstring_view effect, std::string_view group, std::wstring_view member)
+    {
+        const std::string part = MemberPart(member);
+        if (part.empty()) return {};
+        return "EffectGraph" + EffectSymbol(effect) + "_" + std::string(group) + "_" + part;
+    }
+
+    std::string EffectIdentifiers(const EffectBlobEffectInfo& effect)
+    {
+        const GUID id = EffectClsid(effect.effectId);
+        std::string out = std::format("inline constexpr GUID {} = {{ 0x{:08x}, 0x{:04x}, 0x{:04x}, "
+                                      "{{ 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x} }} }};\n",
+                                      EffectClsidName(effect.name), id.Data1, id.Data2, id.Data3,
+                                      id.Data4[0], id.Data4[1], id.Data4[2], id.Data4[3],
+                                      id.Data4[4], id.Data4[5], id.Data4[6], id.Data4[7]);
+        const auto group = [&](std::string_view kind, const std::vector<std::wstring>& names)
+        {
+            std::vector<std::string> taken;
+            for (const auto& name : names)
+            {
+                const std::string symbol = EffectMemberName(effect.name, kind, name);
+                // Two names that differ only outside [A-Za-z0-9] would define one symbol twice.
+                if (symbol.empty() || std::ranges::find(taken, symbol) != taken.end())
+                {
+                    out += "// " + std::string(kind) + " '" + WideToUtf8(name) + "': no constant, " +
+                           (symbol.empty() ? std::string("no letters or digits") : symbol + " is taken") + "\n";
+                    continue;
+                }
+                taken.push_back(symbol);
+                out += "inline constexpr wchar_t " + symbol + "[] = L\"" + WideLiteral(name) + "\";\n";
+            }
+        };
+        group("Parameters", effect.parameters);
+        group("Fields", effect.fields);
+        return out;
+    }
+
+    EffectBlobEffectInfo EffectNames(const ShaderLabEffectDescriptor& descriptor)
+    {
+        EffectBlobEffectInfo info{ descriptor.name, descriptor.effectId };
+        for (const auto& parameter : descriptor.parameters) info.parameters.push_back(parameter.name);
+        for (const auto& field : descriptor.analysisFields) info.fields.push_back(field.name);
+        return info;
+    }
+
     EffectBlobBuild BuildEffectBlob(std::wstring_view json, const std::wstring& source, const EffectBlobOptions& options)
     {
         EffectBlobBuild result;
@@ -323,7 +405,7 @@ namespace ShaderLab::Effects
         {
             const auto node = ShaderLabEffects::CreateNode(descriptor);
             const auto& def = *node.customEffect;
-            EffectBlobEffectInfo effect{ descriptor.name, descriptor.effectId };
+            EffectBlobEffectInfo effect = EffectNames(descriptor);
 
             // The listed parameters this effect can serve on the GPU.
             const auto gpuNames = GpuBindableNames(def);
@@ -519,17 +601,8 @@ namespace ShaderLab::Effects
         out += "    " + symbol + "_Description, sizeof(" + symbol + "_Description),\n";
         out += "    " + symbol + "_Builds, sizeof(" + symbol + "_Builds) / sizeof(" + symbol + "_Builds[0]) - 1,\n};\n";
 
-        // Each effect's class id, for CreateEffectById.
-        out += "\n";
-        for (const auto& effect : build.effects)
-        {
-            const GUID id = EffectClsid(effect.effectId);
-            out += std::format("inline constexpr GUID {} = {{ 0x{:08x}, 0x{:04x}, 0x{:04x}, "
-                               "{{ 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x} }} }};\n",
-                               EffectClsidName(effect.name), id.Data1, id.Data2, id.Data3,
-                               id.Data4[0], id.Data4[1], id.Data4[2], id.Data4[3],
-                               id.Data4[4], id.Data4[5], id.Data4[6], id.Data4[7]);
-        }
+        // Each effect's class id, for CreateEffectById, and its names, for Bind.
+        for (const auto& effect : build.effects) out += "\n" + EffectIdentifiers(effect);
         if (options.registerAtStartup)
         {
             out += "\n#ifndef EFFECTGRAPH_NO_STARTUP_REGISTRATION\n"

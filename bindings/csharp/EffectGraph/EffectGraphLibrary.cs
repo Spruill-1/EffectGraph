@@ -20,6 +20,7 @@ public static class HResults
     public const int UnsupportedFormat = unchecked((int)0x80040E08);
     public const int IncompatibleEffect = unchecked((int)0x80040E09);
     public const int EffectNotIncluded = unchecked((int)0x80040E0A);
+    public const int FallbackBuild = unchecked((int)0x80040E0B);   // 1.1
 }
 
 public static class EffectGraphLibrary
@@ -138,4 +139,8 @@ public static class EffectGraphExtensions
     }
 
     public static IEffectGraphInput AsInput(this IEffectGraphNode node) => (IEffectGraphInput)node;
+    // 1.1: the dirty-rect interfaces. InvalidCastException where not implemented.
+    public static IEffectGraphNode2 AsNode2(this IEffectGraphNode node) => (IEffectGraphNode2)node;
+    public static IEffectGraphInput2 AsInput2(this IEffectGraphNode node) => (IEffectGraphInput2)node;
+    public static IEffectGraphContext2 AsContext2(this IEffectGraphContext context) => (IEffectGraphContext2)context;
 }

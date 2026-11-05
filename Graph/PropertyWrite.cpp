@@ -250,7 +250,7 @@ namespace ShaderLab::Graph
             const auto* path = std::get_if<std::wstring>(&converted);
             if (!path) return Quoted(key) + L" must be a file path string";
             node.mediaPath = *path;
-            node.dirty = true;
+            node.MarkDirty();
             return {};
         }
 
@@ -260,7 +260,7 @@ namespace ShaderLab::Graph
             if (node.IsClock()) SetClockPlaying(node, *play);
             else                node.isPlaying = *play;
         }
-        node.dirty = true;
+        node.MarkDirty();
         return {};
     }
 }

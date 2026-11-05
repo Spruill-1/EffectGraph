@@ -66,11 +66,11 @@ namespace ShaderLab::Rendering::Evaluator
             node.runtimeError = L"Auto-compile failed: " + error;
             DropOutput(node);
             // Retried on every visit regardless; see VisitBuiltIn.
-            node.dirty = false;
+            node.ClearDirty();
             return false;
         case BaselineStatus::Compiled:
             CoCreateGuid(&def.shaderGuid);
-            node.dirty = true;
+            node.MarkDirty();
             return true;
         }
         return true;
@@ -91,7 +91,7 @@ namespace ShaderLab::Rendering::Evaluator
             if (!keepLoadError)
                 node.runtimeError = std::wstring(cCreateEffectFailedPrefix) + createError;
             DropOutput(node);
-            node.dirty = false;   // retried on every visit regardless
+            node.ClearDirty();   // retried on every visit regardless
             return;
         }
         node.runtimeError.clear();
@@ -103,17 +103,17 @@ namespace ShaderLab::Rendering::Evaluator
             {
                 node.runtimeError = L"Shader not compiled. Open in Effect Designer and compile.";
                 DropOutput(node);
-                node.dirty = false;
+                node.ClearDirty();
                 return;
             }
             WireInputs(effect, node, graph);
-            const bool wasDirty = node.dirty;
+            const bool wasDirty = node.IsDirty();
             if (wasDirty)
             {
                 ApplyProperties(effect, node.properties);
-                node.dirty = false;
+                node.ClearDirty();
             }
-            UpdateEffectCachePolicy(effect, runtime, wasDirty);
+            UpdateEffectCachePolicy(effect, runtime, wasDirty || !CachesOutput(node.id));
             PublishOutput(node, effect);
             return;
         }
@@ -121,7 +121,7 @@ namespace ShaderLab::Rendering::Evaluator
         const auto& def = node.customEffect.value();
         PropertyMap effectiveProps;
         const bool bindingsChanged = ResolveBindings(node, graph, effectiveProps);
-        bool wasDirty = node.dirty || bindingsChanged;
+        bool wasDirty = node.IsDirty() || bindingsChanged;
         // A binding that moved changes this node's output, so downstream
         // consumers have to learn about it too.
         if (bindingsChanged) MarkOutputChanged(node.id);
@@ -142,9 +142,13 @@ namespace ShaderLab::Rendering::Evaluator
             effectiveProps[std::wstring(cInputMaskProperty)] = static_cast<float>(inputMask);
             node.properties[std::wstring(cInputMaskProperty)] = static_cast<float>(inputMask);
         }
+        // New host dimensions change the whole output, dirty or not.
         if (isPixelShader && HasInjected(def.injectedConstants, InjectedConstants::OutputSize) &&
             InjectHostDimensions(node, effectiveProps, graph, dc))
+        {
             wasDirty = true;
+            MarkOutputChanged(node.id);
+        }
 
         // Bound values go back to node.properties so the UI shows them live.
         if (bindingsChanged)
@@ -165,7 +169,7 @@ namespace ShaderLab::Rendering::Evaluator
             {
                 runtime.instance.computeImpl->ForceUploadConstantBuffer();
             }
-            node.dirty = false;
+            node.ClearDirty();
         }
 
         WireInputs(effect, node, graph);
@@ -196,7 +200,7 @@ namespace ShaderLab::Rendering::Evaluator
             }
         }
 
-        UpdateEffectCachePolicy(effect, runtime, wasDirty);
+        UpdateEffectCachePolicy(effect, runtime, wasDirty || !CachesOutput(node.id));
         PublishOutput(node, effect);
 
         // Read analysis values back only when something changed (it costs a
@@ -315,13 +319,20 @@ namespace ShaderLab::Rendering::Evaluator
                 PlanGpuBindings(node, graph, m_frameOptions.gpuBindings).bits);
             optionKey = Effects::OptionKeyFor(def, effectiveProps);
         }
+        runtime->variant.fallbackInUse = false;
+        runtime->variant.fallbackPending = false;
         if (gpuModeBits != 0 || optionKey != 0)
         {
             const auto identity = Effects::CompileIdentityOf(node);
             const auto choice = m_variants.Select(node, runtime->variant, identity.effectId, identity.effectVersion,
                                                   "ps_5_0", gpuModeBits, optionKey);
             if (gpuModeBits != 0 && choice.bits == 0)
+            {
                 analysisPlan.entries.clear();
+                runtime->variant.fallbackInUse = true;
+                runtime->variant.fallbackPending = choice.routingPending;
+                NoteFallbackBuild(runtime->variant);
+            }
             gpuModeBits  = choice.bits;
             optionKey    = choice.options;
             variantBytes = choice.bytes;

@@ -34,6 +34,15 @@ namespace ShaderLab::Effects
         virtual CaptureResult NextFrame(ID2D1DeviceContext5* dc) = 0;
         virtual ID2D1Image* CurrentImage() const = 0;
 
+        // After NextFrame returned NewFrame: the rects of CurrentImage() the
+        // new frame wrote, in its pixels (right and bottom exclusive), into
+        // `out`, and true. False when the source cannot say, which the
+        // factory takes as the whole image. A source that reports rects
+        // updates its image in place; one that points CurrentImage() at
+        // another image (a resize, a loss) is taken as whole regardless.
+        // Rects that clip to nothing make the frame a NoFrame.
+        virtual bool DirtyRects(std::vector<D2D1_RECT_L>& out) const { (void)out; return false; }
+
         virtual uint32_t Width() const = 0;
         virtual uint32_t Height() const = 0;
         virtual uint64_t FrameCount() const = 0;

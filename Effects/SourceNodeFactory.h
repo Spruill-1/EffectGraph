@@ -99,10 +99,14 @@ namespace ShaderLab::Effects
 
         // Take each live source's next frame. A lost source reports the
         // reason on its node and is reopened once a second until it returns.
-        // True if any source produced a new frame.
+        // True if any source produced a new frame. A new frame marks its node
+        // changed in the rects the source reports (ILiveSource::DirtyRects),
+        // tagged with `regionGeneration` (GraphModel::RegionGeneration); a
+        // frame whose rects clip to nothing is no frame.
         bool TickLiveSources(
             std::span<Graph::EffectNode> nodes,
-            ID2D1DeviceContext5* dc);
+            ID2D1DeviceContext5* dc,
+            uint64_t regionGeneration = 0);
 
         // Hands the live source of node `nodeId` the object it opens on (a
         // picked window, say), or clears it with null. The source is

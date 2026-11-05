@@ -273,6 +273,7 @@ bool GamutLutStampMatches(float4 stamp, TargetXf t, float peak)
         def.inputNames = desc.inputNames;
         def.lookupInputCount = desc.lookupInputCount;
         def.variadicInputs = desc.variadicInputs;
+        def.shiftInvariant = desc.shiftInvariant;
         def.parameters = desc.parameters;
         def.analysisFields = desc.analysisFields;
         def.analysisOutputType = desc.analysisOutputType;

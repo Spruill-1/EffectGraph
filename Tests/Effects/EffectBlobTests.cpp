@@ -83,6 +83,27 @@ namespace
         RunFrame(graph);
     }
 
+    SL_TEST_CASE(TestEffectIdentifiers, Tag::Fast)
+    {
+        printf("\n=== Effect identifiers in a generated header ===\n");
+        Effects::EffectBlobEffectInfo effect{ L"Peak Meter (v2)", L"Peak Meter (v2)" };
+        effect.parameters = { L"Gain", L"Peak (nits)", L"Peak-nits", L"%", L"Say \"hi\"\\", L"Grün" };
+        effect.fields = { L"Gain", L"Nonzero%" };
+        const auto text = Effects::EffectIdentifiers(effect);
+        const auto has = [&](const char* line) { return text.find(line) != std::string::npos; };
+        TEST("Identifiers_Clsid", has("inline constexpr GUID CLSID_EffectGraphPeakMeterV2 = {"));
+        TEST("Identifiers_Parameter", has("inline constexpr wchar_t EffectGraphPeakMeterV2_Parameters_Gain[] = L\"Gain\";\n"));
+        TEST("Identifiers_CaseKept", has("EffectGraphPeakMeterV2_Parameters_Peak_nits[] = L\"Peak (nits)\";\n"));
+        TEST("Identifiers_CollisionCommented",
+             has("// Parameters 'Peak-nits': no constant, EffectGraphPeakMeterV2_Parameters_Peak_nits is taken\n"));
+        TEST("Identifiers_NoLettersCommented", has("// Parameters '%': no constant, no letters or digits\n"));
+        TEST("Identifiers_Escaped", has("EffectGraphPeakMeterV2_Parameters_Say_hi[] = L\"Say \\\"hi\\\"\\\\\";\n"));
+        TEST("Identifiers_NonAsciiEscaped", has("EffectGraphPeakMeterV2_Parameters_Gr_n[] = L\"Gr\\u00FCn\";\n"));
+        // Fields are their own group: a parameter of the same name does not take its symbol.
+        TEST("Identifiers_FieldsSeparate", has("inline constexpr wchar_t EffectGraphPeakMeterV2_Fields_Gain[] = L\"Gain\";\n") &&
+             has("EffectGraphPeakMeterV2_Fields_Nonzero[] = L\"Nonzero%\";\n"));
+    }
+
     SL_TEST_CASE(TestEffectBlobs, Tag::Gpu)
     {
         printf("\n=== Effect blobs ===\n");
@@ -116,6 +137,8 @@ namespace
         TEST("Blob_HeaderSelectsLayout", header.find(
             "defined(EFFECTGRAPH_BLOB_TEST_TONE_MAP) && defined(EFFECTGRAPH_BLOB_TEST_TONE_MAP_GPU_SOURCEPEAKNITS)") != std::string::npos);
         TEST("Blob_HeaderHasSource", header.find("inline constexpr EFFECTGRAPH_EFFECT_SOURCE cBlobTest = {") != std::string::npos);
+        TEST("Blob_HeaderNamesParameters", header.find(
+            "inline constexpr wchar_t EffectGraphBlobTestToneMap_Parameters_SourcePeakNits[] = L\"SourcePeakNits\";\n") != std::string::npos);
 
         // The gradient and statistics compile on their first use in a run;
         // render them once so the counts below see only the blob's effect.

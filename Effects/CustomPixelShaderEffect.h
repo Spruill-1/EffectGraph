@@ -108,6 +108,17 @@ namespace ShaderLab::Effects
         // EvaluatorOptions::subRectInputDemand.
         void SetSubRectInputDemand(bool on) { m_subRectInputDemand = on; }
 
+        // Read image pins with a point filter (true, the default) or with
+        // Direct2D's linear default. Set by the evaluator from
+        // EvaluatorOptions::pointImageFilter; applied with the shader, by
+        // ForceLoadShader, which the evaluator calls on a dirty node.
+        void SetPointImageFilter(bool on)
+        {
+            if (on == m_pointImageFilter) return;
+            m_pointImageFilter = on;
+            m_inputFilterDirty = true;
+        }
+
         // Check if shader bytecode needs initial loading.
         bool NeedsShaderLoad() const { return m_shaderBytecode.empty(); }
 
@@ -133,6 +144,8 @@ namespace ShaderLab::Effects
         D2D1_RECT_L       m_lastOutputRect{}; // From MapInputRectsToOutputRect, for 1:1 TEXCOORD mapping.
 
         bool              m_subRectInputDemand{ true };
+        bool              m_pointImageFilter{ true };
+        bool              m_inputFilterDirty{ true };   // the filter awaits SetInputDescription
 
         // Fixed output size for zero-input source effects.
         UINT32 m_fixedOutputWidth{ 0 };

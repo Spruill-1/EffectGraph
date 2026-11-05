@@ -4,6 +4,8 @@
 // test file reports into, the TEST() assertions, and the self-registering
 // test-case registry main() runs from.
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -24,6 +26,20 @@ namespace ShaderLab::Tests
 
     // --require-fixtures: a skipped test counts as a failure (CI sets it).
     inline bool g_requireFixtures = false;
+
+    // --plugin: the effect plugin main() loaded before the first case
+    // (EffectGraphLoadPlugin), for cases that need effects kept outside this
+    // repository. Empty when none was given.
+    inline std::wstring g_pluginPath;
+
+    // --recording: a folder of desktop-duplication recordings (the PRIV
+    // recorder's format, docs/development/dda-recording.md) the replay cases
+    // play. Empty when none was given.
+    inline std::wstring g_recordingPath;
+
+    // Cases that need a runner option they were not given. Not a missing
+    // fixture, so --require-fixtures does not fail them.
+    inline int g_notRun = 0;
 
     // The path below Tests\ (or the bare file name), for failure lines.
     inline const char* TestSourceName(const char* file)
@@ -80,6 +96,57 @@ namespace ShaderLab::Tests
         std::fflush(stdout);
     }
 
+    // Two timed arms sampled in pairs: a[i] and b[i] back to back, with the
+    // order alternating, so clock-state drift lands in both. Holds the paired
+    // differences d[i] = a[i] - (ratio * b[i] + margin): their median and a
+    // distribution-free 99% confidence interval for it (sign-test order
+    // statistics; the whole sample range below 9 pairs).
+    struct PairedTiming
+    {
+        size_t pairs{ 0 };
+        double median{ 0.0 };
+        double lower{ 0.0 };
+        double upper{ 0.0 };
+        // a is dearer than ratio * b + margin with 99% confidence.
+        bool ConfidentlyAbove() const { return pairs > 0 && lower > 0.0; }
+        // a is cheaper than ratio * b + margin with 99% confidence.
+        bool ConfidentlyBelow() const { return pairs > 0 && upper < 0.0; }
+    };
+
+    inline PairedTiming ComparePaired(const std::vector<double>& a, const std::vector<double>& b,
+                                      double ratio = 1.0, double margin = 0.0)
+    {
+        PairedTiming result;
+        const size_t n = (std::min)(a.size(), b.size());
+        if (n == 0) return result;
+        std::vector<double> d(n);
+        for (size_t i = 0; i < n; ++i) d[i] = a[i] - (ratio * b[i] + margin);
+        std::sort(d.begin(), d.end());
+        result.pairs = n;
+        result.median = (n % 2) ? d[n / 2] : 0.5 * (d[n / 2 - 1] + d[n / 2]);
+        // The largest k with P(Binomial(n, 1/2) < k) <= 0.005: [d(k), d(n-k+1)]
+        // then covers the median with at least 99% probability.
+        double cumulative = 0.0, term = std::pow(0.5, static_cast<double>(n));
+        size_t k = 0;
+        for (size_t j = 0; j < n; ++j)
+        {
+            if (cumulative + term > 0.005) break;
+            cumulative += term;
+            k = j + 1;
+            term = term * static_cast<double>(n - j) / static_cast<double>(j + 1);
+        }
+        result.lower = d[k == 0 ? 0 : k - 1];
+        result.upper = d[k == 0 ? n - 1 : n - k];
+        return result;
+    }
+
+    inline void PrintPairedTiming(const char* name, const PairedTiming& t, const char* unit = "ms")
+    {
+        std::printf("  [info] %s: %zu interleaved pairs, paired difference median %+.4f %s, 99%% CI [%+.4f, %+.4f]\n",
+                    name, t.pairs, t.median, unit, t.lower, t.upper);
+        std::fflush(stdout);
+    }
+
     // A test (or part of one) that cannot run here, typically for a missing
     // fixture. Counted, and a failure under --require-fixtures.
     inline void ReportSkip(const std::string& reason)
@@ -94,6 +161,15 @@ namespace ShaderLab::Tests
         {
             std::printf("  [SKIP] %s\n", reason.c_str());
         }
+        std::fflush(stdout);
+    }
+
+    // A case that cannot run without a runner option (--plugin): counted
+    // apart from fixture skips.
+    inline void ReportNotRun(const std::string& reason)
+    {
+        ++g_notRun;
+        std::printf("  [SKIP] %s\n", reason.c_str());
         std::fflush(stdout);
     }
 

@@ -107,7 +107,7 @@ namespace ShaderLab::Graph
     {
         clock.clockTime = std::clamp(normalizedTime, 0.0, 1.0) * ReadClockParams(clock).Duration();
         clock.clockTickBucket = -1;
-        clock.dirty = true;
+        clock.MarkDirty();
     }
 
     void AdvanceClocks(GraphModel& graph, double dt)
@@ -117,7 +117,7 @@ namespace ShaderLab::Graph
             if (!node.IsClock()) continue;
             ApplyAutoDuration(graph, node);
             if (node.isPlaying && AdvanceClock(node, dt))
-                node.dirty = true;
+                node.MarkDirty();
         }
     }
 
@@ -129,7 +129,7 @@ namespace ShaderLab::Graph
             if (!node.IsClock()) continue;
             node.clockTime = ClockTimeAt(ReadClockParams(node), seconds);
             node.clockTickBucket = -1;
-            node.dirty = true;
+            node.MarkDirty();
             ++count;
         }
         return count;

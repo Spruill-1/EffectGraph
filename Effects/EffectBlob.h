@@ -11,6 +11,8 @@
 // decompress a build only when it is first used.
 namespace ShaderLab::Effects
 {
+    struct ShaderLabEffectDescriptor;
+
     inline constexpr uint32_t cEffectBlobFormat = 3;
 
     struct EffectBlobOptions
@@ -49,6 +51,9 @@ namespace ShaderLab::Effects
         std::vector<std::pair<std::wstring, std::vector<std::wstring>>> options;
         // The GPU layouts built, beside the all-CPU one.
         std::vector<std::vector<std::wstring>> gpuLayouts;
+        // Its parameter and analysis field names, in the effect's order.
+        std::vector<std::wstring> parameters;
+        std::vector<std::wstring> fields;
     };
 
     struct EffectBlobBuild
@@ -90,10 +95,25 @@ namespace ShaderLab::Effects
     // The C++ header form: the description and each build as arrays, each
     // build behind an #if on the macros that select it, an
     // EFFECTGRAPH_EFFECT_SOURCE named `symbol` for EffectGraphRegisterEffects,
-    // and each effect's class id (EffectClsidName) for CreateEffectById.
+    // and each effect's EffectIdentifiers.
     std::string GenerateEffectHeader(const EffectBlobBuild& build, const std::string& symbol,
                                                    const std::wstring& sourceName,
                                                    const EffectHeaderOptions& options = {});
+
+    // An effect's names as a generated header gives them: its class id
+    // (EffectClsidName) for CreateEffectById, then a wide string constant per
+    // parameter and per analysis field for Bind, named by EffectMemberName.
+    // A name with no letters or digits, or one whose symbol an earlier name
+    // of the same group took, gets a comment instead.
+    std::string EffectIdentifiers(const EffectBlobEffectInfo& effect);
+    EffectBlobEffectInfo EffectNames(const ShaderLabEffectDescriptor& descriptor);
+
+    // The constant naming a parameter or field: EffectGraph<EffectSymbol>_
+    // <group>_<member>, the member's case kept and each run of anything
+    // outside [A-Za-z0-9] one '_' ("Max" -> EffectGraphLuminanceStatistics_Fields_Max,
+    // "Nonzero%" -> ..._Fields_Nonzero). Empty for a member with no letters
+    // or digits.
+    std::string EffectMemberName(std::wstring_view effect, std::string_view group, std::wstring_view member);
 
     // The macro that selects an effect, option value or GPU layout in a
     // generated header: EFFECTGRAPH_ plus the names, uppercased, each run of

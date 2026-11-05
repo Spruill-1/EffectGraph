@@ -145,6 +145,14 @@ namespace ShaderLab::Effects
         // shader's [numthreads] dimensions.
         virtual HRESULT STDMETHODCALLTYPE SetDispatchDims(
             UINT32 x, UINT32 y, UINT32 z) = 0;
+
+        // The rects input 0 changed in since this effect's last dispatch, in
+        // the input texture's pixels, for the next call only. A cell
+        // reduction (SHADERLAB_REDUCE_CELLS) recomputes only the cells they
+        // touch; any other shader ignores them. Not called, or called with
+        // null: the whole input changed.
+        virtual HRESULT STDMETHODCALLTYPE SetInputDirtyRects(
+            const RECT* rects, UINT32 count) = 0;
     };
 
     // The actual D2D effect class. Implements:
@@ -236,6 +244,15 @@ namespace ShaderLab::Effects
             UINT32 slot, ID3D11ShaderResourceView* srv) override;
         HRESULT STDMETHODCALLTYPE SetDispatchDims(
             UINT32 x, UINT32 y, UINT32 z) override;
+        HRESULT STDMETHODCALLTYPE SetInputDirtyRects(
+            const RECT* rects, UINT32 count) override;
+        // The installed shader is a cell reduction, and the cells the last
+        // Dispatch recomputed out of how many (0 and 0 otherwise).
+        bool UsesReduceCells() const { return m_runner.UsesReduceCells(); }
+        uint32_t LastCellsDispatched() const { return m_runner.LastCellsDispatched(); }
+        uint32_t LastCellsTotal() const { return m_runner.LastCellsTotal(); }
+        uint64_t LastCellMask() const { return m_runner.LastCellMask(); }
+        bool LastCellRectsGiven() const { return m_runner.LastCellRectsGiven(); }
 
         // Async CPU readback for the NEXT Dispatch only: the copy is queued
         // and the values are collected later through PollAnalysisReadback,
@@ -244,12 +261,41 @@ namespace ShaderLab::Effects
         void SetAsyncReadback(bool async) { m_asyncReadback = async; }
         // EvaluatorOptions::computeCommandList for this bridge's dispatches.
         void SetComputeCommandList(bool on) { m_runner.UseImmediateContextForBenchmark(!on); }
-        // Newest completed async readback, if any landed since the last call.
-        bool PollAnalysisReadback(std::vector<float>& out);
-        bool HasPendingReadback() const { return m_runner.HasPendingReadback(); }
-        HRESULT WriteResults(uint32_t firstElement, const float* float4s, uint32_t elementCount)
+        // Newest completed async readback, if any landed since the last call,
+        // and the sequence number it was scheduled under.
+        bool PollAnalysisReadback(std::vector<float>& out, uint64_t* seq = nullptr);
+        // The last poll's Map failure (the slot retired unread), or S_OK.
+        HRESULT LastPollResult() const { return m_runner.LastPollResult(); }
+        void FailNextPollForTest() { m_runner.FailNextPollForTest(); }
+        // The newest pending async readback, waiting for it.
+        bool CollectAnalysisReadbackBlocking(std::vector<float>& out, uint64_t* seq = nullptr)
         {
-            return m_runner.WriteResults(firstElement, float4s, elementCount);
+            return m_runner.CollectNewestBlocking(out, seq);
+        }
+        bool HasPendingReadback() const { return m_runner.HasPendingReadback(); }
+        uint64_t LastScheduledReadback() const { return m_runner.LastScheduledSeq(); }
+        uint64_t BufferGeneration() const { return m_runner.BufferGeneration(); }
+        // The lane-3 copy pass of the NEXT Dispatch only (D3D11ComputeRunner::
+        // TextureCopy); reset after each Dispatch.
+        void SetTextureCopy(Rendering::D3D11ComputeRunner::TextureCopy mode, std::vector<uint32_t> keep = {})
+        {
+            m_textureCopy = mode;
+            m_textureCopyKeep = std::move(keep);
+        }
+        // The last Dispatch's copy pass was asked for and did not run.
+        bool TextureCopyFailed() const { return m_runner.TextureCopyFailed(); }
+        void FailNextTextureCopyForTest() { m_runner.FailNextTextureCopyForTest(); }
+        void FailNextSubmitForTest() { m_runner.FailNextSubmitForTest(); }
+        HRESULT WriteAnalysisTexels(uint32_t firstTexel, const float* float4s, uint32_t texelCount)
+        {
+            return m_runner.WriteAnalysisTexels(firstTexel, float4s, texelCount);
+        }
+        bool AnalysisTextureFilled() const { return m_runner.AnalysisTextureFilled(); }
+        bool AnalysisTextureRequested() const { return m_runner.AnalysisTextureRequested(); }
+        HRESULT WriteResults(uint32_t firstElement, const float* float4s, uint32_t elementCount,
+                             bool publishTexture = true)
+        {
+            return m_runner.WriteResults(firstElement, float4s, elementCount, publishTexture);
         }
         // Blocking read of the last dispatch's results.
         HRESULT ReadResults(std::vector<float>& out) { return m_runner.ReadResults(out); }
@@ -312,6 +358,8 @@ namespace ShaderLab::Effects
         std::vector<BYTE>             m_pendingBytecode;
         bool                          m_bytecodeDirty{ false };
         bool                          m_asyncReadback{ false };
+        Rendering::D3D11ComputeRunner::TextureCopy m_textureCopy{ Rendering::D3D11ComputeRunner::TextureCopy::All };
+        std::vector<uint32_t>         m_textureCopyKeep;
 
         // DXBC checksum identity of the pending / installed bytecode, and a
         // few previously created shaders so a baseline <-> variant switch
@@ -351,6 +399,10 @@ namespace ShaderLab::Effects
         // GPU-binding SRVs for the next Dispatch, cleared at its end.
         std::vector<ID3D11ShaderResourceView*> m_gpuBindingSrvs;
         std::vector<UINT32>                    m_gpuBindingSlots;
+
+        // Input 0's dirty rects for the next call; unset = whole.
+        std::vector<RECT> m_dirtyRects;
+        bool              m_dirtyRectsGiven{ false };
 
         // Dispatch dimensions for the next call. Default (1,1,1).
         UINT32 m_dispatchX{ 1 };

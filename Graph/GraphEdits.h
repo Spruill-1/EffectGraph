@@ -35,6 +35,11 @@ namespace ShaderLab::Graph
     // changed: a re-registered capture, a reloaded file, a new frame.
     void MarkNodeChanged(EffectNode& node);
     bool MarkNodeChanged(GraphModel& graph, uint32_t nodeId);
+    // The same, for a change confined to `region` of the node's output (a
+    // source told which rects of its texture were written). Unions with a
+    // change already pending; None changes nothing.
+    void MarkNodeChanged(EffectNode& node, const DirtyRegion& region);
+    bool MarkNodeChanged(GraphModel& graph, uint32_t nodeId, const DirtyRegion& region);
 
     // Clears a node's error and marks it dirty, so the next frame tries it
     // again (a source's Reload).
@@ -53,6 +58,12 @@ namespace ShaderLab::Graph
     // source field. False when the property is not bound.
     bool SetBindingComponent(GraphModel& graph, uint32_t nodeId, const std::wstring& key,
         uint32_t component);
+
+    // Sets the commit policy of a bound property (PropertyBinding::commitPolicy)
+    // and marks the node and the nodes it reads dirty (a deferred commit
+    // judges their records again under the new policy). False when the
+    // property is not bound.
+    bool SetBindingCommitPolicy(GraphModel& graph, uint32_t nodeId, const std::wstring& key, CommitPolicy policy);
 
     // Records a node's GPU time for the perf display. Not an edit: nothing
     // re-renders.

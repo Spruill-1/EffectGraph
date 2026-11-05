@@ -268,7 +268,7 @@ namespace ShaderLab::Effects
         }
         // Clean, so a failing source neither stops the others nor keeps the
         // graph re-rendering.
-        node.dirty = false;
+        node.ClearDirty();
     }
 
     void SourceNodeFactory::PrepareLive(EffectNode& node, ID2D1DeviceContext5* dc, ID3D11Device* d3dDevice)
@@ -404,11 +404,11 @@ namespace ShaderLab::Effects
         {
             node.runtimeError.clear();
             node.cachedOutput = nullptr;
-            node.dirty = false;
+            node.ClearDirty();
             return;
         }
 
-        // Decode is keyed on the file, not on node.dirty: MarkAllDirty fires
+        // Decode is keyed on the file, not on the dirty flag: MarkAllDirty fires
         // on load, display-profile change and forced redraw, and none of
         // those may re-decode. Re-saving the file does.
         const auto stamp = StampOf(node.mediaPath.value());
@@ -416,7 +416,7 @@ namespace ShaderLab::Effects
         if (it != m_images.end() && it->second.bitmap && it->second.stamp == stamp)
         {
             node.cachedOutput = it->second.bitmap.get();
-            node.dirty = false;
+            node.ClearDirty();
             return;
         }
 
@@ -426,7 +426,7 @@ namespace ShaderLab::Effects
             node.cachedOutput = bitmap.get();
             m_images[node.id] = { std::move(bitmap), stamp };
             node.runtimeError.clear();
-            node.dirty = false;
+            node.ClearDirty();
         }
         else
         {
@@ -464,7 +464,7 @@ namespace ShaderLab::Effects
         winrt::com_ptr<ID2D1Image> output;
         flood->GetOutput(output.put());
         node.cachedOutput = output.get();
-        node.dirty = false;
+        node.ClearDirty();
     }
 
     // -----------------------------------------------------------------------
@@ -554,7 +554,7 @@ namespace ShaderLab::Effects
                             crop->SetValue(D2D1_CROP_PROP_RECT, D2D1_VECTOR_4F{ 0.0f, 0.0f,
                                 static_cast<float>(provider->FrameWidth()), static_cast<float>(provider->FrameHeight()) });
                             pastEnd->second = crop;
-                            nodePtr->dirty = true;
+                            nodePtr->MarkDirty();
                         }
                         winrt::com_ptr<ID2D1Image> black;
                         pastEnd->second->GetOutput(black.put());
@@ -568,7 +568,7 @@ namespace ShaderLab::Effects
                 if (m_videoPastEnd.erase(id) > 0 && nodePtr)
                 {
                     nodePtr->cachedOutput = provider->CurrentBitmap();
-                    nodePtr->dirty = true;
+                    nodePtr->MarkDirty();
                 }
 
                 // Show the frame for Time, whether a Clock drives it or it is a
@@ -583,7 +583,7 @@ namespace ShaderLab::Effects
                     if (nodePtr)
                     {
                         nodePtr->cachedOutput = provider->CurrentBitmap();
-                        nodePtr->dirty = true;
+                        nodePtr->MarkDirty();
                         if (nodePtr->runtimeError.starts_with(cVideoUploadErrorPrefix))
                             nodePtr->runtimeError.clear();
                     }
@@ -607,7 +607,8 @@ namespace ShaderLab::Effects
 
     bool SourceNodeFactory::TickLiveSources(
         std::span<Graph::EffectNode> nodes,
-        ID2D1DeviceContext5* dc)
+        ID2D1DeviceContext5* dc,
+        uint64_t regionGeneration)
     {
         PruneOrphans(nodes);
         bool anyNewFrame = false;
@@ -671,6 +672,28 @@ namespace ShaderLab::Effects
                 reason = std::wstring(winrt::to_hstring(ex.what()));
             }
 
+            // Where the new frame wrote: its rects clipped to the image, the
+            // whole image when they cover it or the source cannot say.
+            Graph::DirtyRegion changed;
+            if (result == CaptureResult::NewFrame)
+            {
+                std::vector<D2D1_RECT_L> rects;
+                if (source.DirtyRects(rects))
+                {
+                    const D2D1_RECT_L bounds{ 0, 0, static_cast<LONG>(source.Width()), static_cast<LONG>(source.Height()) };
+                    for (const auto& rect : rects)
+                        changed.Add(Graph::DirtyRegion::Intersect(rect, bounds), regionGeneration);
+                    if (changed.IsNone())
+                        result = CaptureResult::NoFrame;
+                    else if (changed.Covers(bounds))
+                        changed = Graph::DirtyRegion::Whole();
+                }
+                else
+                {
+                    changed = Graph::DirtyRegion::Whole();
+                }
+            }
+
             if (result == CaptureResult::NewFrame)
                 anyNewFrame = true;
             if (!node)
@@ -682,10 +705,10 @@ namespace ShaderLab::Effects
             if (node->cachedOutput != current)
             {
                 node->cachedOutput = current;
-                node->dirty = true;
+                node->MarkDirty();
             }
             if (result == CaptureResult::NewFrame)
-                node->dirty = true;
+                node->MarkDirty(changed);
 
             if (result == CaptureResult::Failed || !current)
             {

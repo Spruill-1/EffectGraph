@@ -61,6 +61,9 @@
     <ClInclude Include="Graph\NodeContracts.h">
       <Filter>Graph</Filter>
     </ClInclude>
+    <ClInclude Include="Graph\DirtyRegion.h">
+      <Filter>Graph</Filter>
+    </ClInclude>
     <ClInclude Include="Graph\SourceKind.h">
       <Filter>Graph</Filter>
     </ClInclude>
@@ -290,6 +293,9 @@
       <Filter>Rendering</Filter>
     </ClCompile>
     <ClCompile Include="Rendering\Evaluator\AnalysisReadback.cpp">
+      <Filter>Rendering\Evaluator</Filter>
+    </ClCompile>
+    <ClCompile Include="Rendering\Evaluator\DeferredCommit.cpp">
       <Filter>Rendering\Evaluator</Filter>
     </ClCompile>
     <ClCompile Include="Rendering\Evaluator\BindingResolver.cpp">

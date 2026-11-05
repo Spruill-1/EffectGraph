@@ -261,6 +261,75 @@ namespace ShaderLab::Api
         return m_context->SetInputImage(m_nodeId, image);
     }
 
+    // ---- IEffectGraphInput2 / IEffectGraphNode2
+
+    HRESULT NodeBase::InvalidateRectsImpl(const RECT* rects, UINT32 count)
+    {
+        if (!Live()) return EFFECTGRAPH_E_NODE_REMOVED;
+        if (count && !rects) return E_INVALIDARG;
+        return m_context->InvalidateInputRects(m_nodeId, rects, count);
+    }
+
+    HRESULT NodeBase::MoveRectsImpl(const EFFECTGRAPH_MOVE_RECT* moves, UINT32 count)
+    {
+        if (!Live()) return EFFECTGRAPH_E_NODE_REMOVED;
+        if (count && !moves) return E_INVALIDARG;
+        return m_context->MoveInputRects(m_nodeId, moves, count);
+    }
+
+    HRESULT NodeBase::GetInvalidRectsImpl(RECT* rects, UINT32 capacity, UINT32* count, BOOL* whole)
+    {
+        if (!count || !whole) return E_POINTER;
+        *count = 0;
+        *whole = FALSE;
+        if (capacity && !rects) return E_INVALIDARG;
+        if (!Live()) return EFFECTGRAPH_E_NODE_REMOVED;
+        return m_context->InvalidRectsOf(m_nodeId, rects, capacity, count, whole);
+    }
+
+    HRESULT NodeBase::TryGetValuesImpl(IEffectGraphValues** values)
+    {
+        if (!values) return E_POINTER;
+        *values = nullptr;
+        if (!Live()) return EFFECTGRAPH_E_NODE_REMOVED;
+        if (!m_context->DeferredCommit()) return E_NOT_VALID_STATE;
+        std::vector<Graph::AnalysisFieldValue> fields;
+        if (!m_context->Evaluator().LandedValues(m_nodeId, fields)) return S_FALSE;
+        winrt::make<Values>(std::move(fields)).as<IEffectGraphValues>().copy_to(values);
+        return S_OK;
+    }
+
+    HRESULT NodeBase::CommitFieldsImpl(const UINT32* fieldIndices, const float* values, UINT32 count)
+    {
+        if (!Live()) return EFFECTGRAPH_E_NODE_REMOVED;
+        if (!m_context->DeferredCommit()) return E_NOT_VALID_STATE;
+        return m_context->Evaluator().CommitFields(m_context->Model(), m_nodeId, fieldIndices, values, count);
+    }
+
+    HRESULT NodeBase::GetCommittedValuesImpl(IEffectGraphValues** values)
+    {
+        if (!values) return E_POINTER;
+        *values = nullptr;
+        if (!Live()) return EFFECTGRAPH_E_NODE_REMOVED;
+        if (!m_context->DeferredCommit()) return E_NOT_VALID_STATE;
+        std::vector<Graph::AnalysisFieldValue> fields;
+        bool pending = false;
+        if (!m_context->Evaluator().CommittedValues(m_context->Model(), m_nodeId, fields, pending)) return S_FALSE;
+        winrt::make<Values>(std::move(fields)).as<IEffectGraphValues>().copy_to(values);
+        return pending ? S_FALSE : S_OK;
+    }
+
+    HRESULT NodeBase::SetCommitPolicyImpl(PCWSTR property, EFFECTGRAPH_COMMIT_POLICY policy)
+    {
+        if (!property) return E_INVALIDARG;
+        if (policy < EFFECTGRAPH_COMMIT_POLICY_EXACT || policy > EFFECTGRAPH_COMMIT_POLICY_HOSTED) return E_INVALIDARG;
+        if (!Live()) return EFFECTGRAPH_E_NODE_REMOVED;
+        if (!Graph::SetBindingCommitPolicy(m_context->Model(), m_nodeId, property,
+                                           static_cast<Graph::CommitPolicy>(policy)))
+            return E_INVALIDARG;
+        return S_OK;
+    }
+
     // ---- ID2D1Properties
 
     std::vector<NodeBase::Property> NodeBase::Properties(const Graph::EffectNode& node) const

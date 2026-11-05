@@ -201,10 +201,10 @@ namespace ShaderLab::Tests
             auto node = ShaderNode(L"Writer", CustomShaderType::PixelShader, {
                 Param(L"Gain", L"float", 1.0f), Param(L"Mode", L"uint", 0u), Param(L"Offset", L"int", int32_t{ 0 }),
                 Param(L"Enabled", L"bool", false), Param(L"Tint", L"float3", Numerics::float3{}) });
-            node.dirty = false;
+            node.ClearDirty();
 
             TEST("Write_NumberToUint", WriteProperty(node, L"Mode", 3.0).empty() &&
-                 std::get<uint32_t>(node.properties[L"Mode"]) == 3u && node.dirty);
+                 std::get<uint32_t>(node.properties[L"Mode"]) == 3u && node.IsDirty());
             TEST("Write_NumberToInt", WriteProperty(node, L"Offset", -2.0).empty() &&
                  std::get<int32_t>(node.properties[L"Offset"]) == -2);
             TEST("Write_StringToFloat", WriteProperty(node, L"Gain", std::wstring(L" 203 ")).empty() &&

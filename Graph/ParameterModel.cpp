@@ -59,7 +59,7 @@ namespace ShaderLab::Graph
         const float* current = std::get_if<float>(&valueIt->second);
         if (std::abs(value - (current ? *current : 0.0f)) < 0.0001f) return false;
         valueIt->second = value;
-        node.dirty = true;
+        node.MarkDirty();
         return true;
     }
 }

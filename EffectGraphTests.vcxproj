@@ -99,6 +99,7 @@
     <ClInclude Include="Tests\TestCommon.h" />
     <ClInclude Include="Tests\TestSupport.h" />
     <ClInclude Include="Tests\ShaderTestBench.h" />
+    <ClInclude Include="Tests\Rendering\DdaStageSim.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch_engine.cpp">
@@ -113,6 +114,7 @@
     <ClCompile Include="Tests\Api\EffectGraphPluginTests.cpp" />
     <ClCompile Include="Tests\Effects\BuiltInEffectTests.cpp" />
     <ClCompile Include="Tests\Effects\BytecodeCacheTests.cpp" />
+    <ClCompile Include="Tests\Effects\D2DParityTests.cpp" />
     <ClCompile Include="Tests\Effects\EffectBlobTests.cpp" />
     <ClCompile Include="Tests\Effects\EffectCatalogTests.cpp" />
     <ClCompile Include="Tests\Effects\HlslScaffoldTests.cpp" />
@@ -124,6 +126,7 @@
     <ClCompile Include="Tests\Graph\GraphContractTests.cpp" />
     <ClCompile Include="Tests\Graph\GraphEditsTests.cpp" />
     <ClCompile Include="Tests\Graph\GraphModelTests.cpp" />
+    <ClCompile Include="Tests\Graph\DirtyRegionTests.cpp" />
     <ClCompile Include="Tests\Graph\GraphPolicyTests.cpp" />
     <ClCompile Include="Tests\Math\ColorMatrixTests.cpp" />
     <ClCompile Include="Tests\Math\DeltaETests.cpp" />
@@ -131,6 +134,8 @@
     <ClCompile Include="Tests\Math\MobiusReinhardTests.cpp" />
     <ClCompile Include="Tests\Math\TransferFunctionTests.cpp" />
     <ClCompile Include="Tests\Rendering\ComputeTests.cpp" />
+    <ClCompile Include="Tests\Rendering\DdaReplayTests.cpp" />
+    <ClCompile Include="Tests\Rendering\DdaStageSim.cpp" />
     <ClCompile Include="Tests\Rendering\EvaluatorTests.cpp" />
     <ClCompile Include="Tests\Rendering\GpuBindingTests.cpp" />
     <ClCompile Include="Tests\Rendering\GpuTimerTests.cpp" />

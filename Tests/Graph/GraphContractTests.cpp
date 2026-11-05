@@ -198,8 +198,10 @@ namespace ShaderLab::Tests
                 if (desc.IsUserEffect() || desc.shaderType != CustomShaderType::D3D11ComputeShader) continue;
                 const bool reduces = desc.hlslSource.find("SHADERLAB_REDUCE_SCRATCH") != std::string::npos;
                 const bool imagePass = desc.hlslSource.find("SHADERLAB_IMAGE_PASS(") != std::string::npos;
+                const bool cells = desc.hlslSource.find("SHADERLAB_REDUCE_CELLS") != std::string::npos;
                 const bool ok = reduces == (desc.dispatchShape == DispatchShape::ReduceGroups) &&
-                                imagePass == (desc.dispatchShape == DispatchShape::ImagePass);
+                                imagePass == (desc.dispatchShape == DispatchShape::ImagePass) &&
+                                cells == (desc.dispatchShape == DispatchShape::ReduceCells);
                 if (!ok)
                 {
                     ++mismatches;

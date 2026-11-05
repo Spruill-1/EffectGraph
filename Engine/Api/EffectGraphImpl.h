@@ -35,7 +35,7 @@ namespace ShaderLab::Api
         winrt::com_ptr<ID2D1Image> output;         // the node's output
     };
 
-    class Context : public winrt::implements<Context, IEffectGraphContextInternal, IEffectGraphContext>
+    class Context : public winrt::implements<Context, IEffectGraphContextInternal, IEffectGraphContext, IEffectGraphContext2>
     {
     public:
         ~Context();
@@ -55,6 +55,12 @@ namespace ShaderLab::Api
         STDMETHOD_(void, GetD3DDevice)(ID3D11Device** device) override;
         STDMETHOD_(void, GetD2DDevice)(ID2D1Device** device) override;
         STDMETHOD(MoveToDevice)(ID3D11Device* device) override;
+
+        // IEffectGraphContext2
+        STDMETHOD(RealizeToIncremental)(IEffectGraphNode* node, ID3D11Texture2D* target, UINT32 flags,
+                                        RECT* drawn, UINT32 drawnCapacity, UINT32* drawnCount,
+                                        EFFECTGRAPH_MOVE_RECT* moved, UINT32 movedCapacity, UINT32* movedCount) override;
+        STDMETHOD(PollReadbacks)() override;
 
         // IEffectGraphContextInternal
         STDMETHOD_(Graph::GraphModel&, Model)() override { return m_graph; }
@@ -80,6 +86,14 @@ namespace ShaderLab::Api
         ID2D1Effect* MetadataEffect(const GUID& clsid);
         HRESULT SetInputTexture(uint32_t nodeId, ID3D11Texture2D* texture, EFFECTGRAPH_INPUT_ENCODING encoding);
         HRESULT SetInputImage(uint32_t nodeId, ID2D1Image* image);
+        // IEffectGraphInput2::InvalidateRects: the rects clipped to what the
+        // input reads, then marked changed.
+        HRESULT InvalidateInputRects(uint32_t nodeId, const RECT* rects, UINT32 count);
+        // IEffectGraphInput2::MoveRects: each move clipped to what the input
+        // reads, then marked changed as a move, and kept for reporting.
+        HRESULT MoveInputRects(uint32_t nodeId, const EFFECTGRAPH_MOVE_RECT* moves, UINT32 count);
+        // IEffectGraphNode2::GetInvalidRects.
+        HRESULT InvalidRectsOf(uint32_t nodeId, RECT* rects, UINT32 capacity, UINT32* count, BOOL* whole);
         // Evaluates what `nodeId` depends on, as Realize does.
         HRESULT EvaluateNode(uint32_t nodeId) { return EvaluateFor(nodeId, nullptr, {}); }
         // The node's analysis fields after evaluating it, read from the GPU
@@ -92,6 +106,8 @@ namespace ShaderLab::Api
         // ValuesBuffer::SetFloats: the buffer, the node's CPU values and the
         // nodes bound to it.
         HRESULT WriteValues(uint32_t nodeId, uint64_t epoch, UINT32 field, const float* floats, UINT32 count);
+        // EFFECTGRAPH_CONTEXT_FLAGS_DEFERRED_ANALYSIS_COMMIT.
+        bool DeferredCommit() const { return m_deferredCommit; }
 
     private:
         HRESULT AddNodeAndWrap(Graph::EffectNode node, IEffectGraphNode** out);
@@ -101,9 +117,35 @@ namespace ShaderLab::Api
         void SyncFrameInputs();
         // Why the device is gone (DXGI_ERROR_DEVICE_REMOVED, ...), or S_OK.
         HRESULT DeviceRemovedReason() const;
-        // One frame for `nodeId`, then the node's state as an HRESULT.
+        // One frame for `nodeId`, then the node's state as an HRESULT. With
+        // `acknowledge`, a successful draw clears the node's pending region;
+        // with `uncacheRoot`, the node's D2D output is not cached that frame.
         HRESULT EvaluateFor(uint32_t nodeId, ID2D1Image* target,
-                            std::function<void(ID2D1DeviceContext5*)> draw);
+                            std::function<void(ID2D1DeviceContext5*)> draw, bool acknowledge = false,
+                            bool uncacheRoot = false);
+        // The roots drawn incrementally (an IncrementalTarget record drawn
+        // uncached), plus `also` when it is not 0: every frame leaves them
+        // uncached, so their CACHED property does not flip between a
+        // RealizeTo and a RealizeToIncremental. Empty with dirtyRegions off.
+        std::vector<uint32_t> UncachedRoots(uint32_t also = 0) const;
+        // A D2D target bitmap over `target`, checked as RealizeTo needs it.
+        HRESULT TargetBitmap(ID3D11Texture2D* target, winrt::com_ptr<ID2D1Bitmap1>& bitmap) const;
+        // verifyDirtyRegions: compares `target` after an incremental draw of
+        // `nodeId` with `before` (the target before it) outside `drawn`, and
+        // with a whole render everywhere; counts mismatching pixels.
+        // The moves the draw applied are replayed onto `before` first; their
+        // destinations, recorded in `drift` (a pixel mask kept per target)
+        // until a draw covers them, may differ from the whole render by
+        // cMoveDitherCodes (a dithering shift-invariant effect).
+        void VerifyIncrementalDraw(uint32_t nodeId, ID3D11Texture2D* target, ID3D11Texture2D* before,
+                                   const std::vector<D2D1_RECT_L>& drawn, const std::vector<Graph::DirtyMove>& moves,
+                                   std::vector<uint8_t>& drift);
+        // What an input reads: the texture, or the image's bounds when finite.
+        std::optional<D2D1_RECT_L> InputBounds(const InputSource& source) const;
+        // Copies each move within `target`, in order, through m_moveScratch
+        // (a copy within one subresource is undefined in D3D11). False when
+        // the scratch could not be made; nothing was copied then.
+        bool ApplyMoves(ID3D11Texture2D* target, const std::vector<Graph::DirtyMove>& moves);
 
         Rendering::DeviceStack m_devices;
         winrt::com_ptr<ID2D1DeviceContext5> m_dc;
@@ -127,6 +169,71 @@ namespace ShaderLab::Api
         };
         std::unordered_map<uint32_t, UploadedValues> m_uploadedValues;
         HRESULT Upload(uint32_t nodeId, const std::vector<Graph::AnalysisFieldValue>& fields);
+
+        // What each node last realized incrementally into, so the next
+        // incremental realize can tell whether the target still holds it.
+        // The reference pins the texture, so a new one cannot reuse the
+        // address. A target written by any other realize since is dropped.
+        struct IncrementalTarget
+        {
+            winrt::com_ptr<ID3D11Texture2D> texture;
+            UINT width{ 0 };
+            UINT height{ 0 };
+            DXGI_FORMAT format{ DXGI_FORMAT_UNKNOWN };
+            // Drawn with the root uncached; a draw that differs redraws whole,
+            // since a cached root rounds differently.
+            bool uncached{ false };
+            // The last generation whose moves this root's realizes reported.
+            uint64_t reportedThrough{ 0 };
+            // The generation of this root's last realize that drew, failed or
+            // not: a move from then or before is a carry-over (PlanMoves).
+            uint64_t attemptedThrough{ 0 };
+            // Moves it would report were pruned (cMaxMoveBacklog): its next
+            // realize draws whole and reports none.
+            bool backlogLost{ false };
+            // verifyDirtyRegions: pixels moved since a draw last covered them.
+            std::vector<uint8_t> drift;
+        };
+        std::unordered_map<uint32_t, IncrementalTarget> m_incrementalTargets;
+        // EFFECTGRAPH_CONTEXT_FLAGS_NO_FALLBACK.
+        bool m_refuseFallbackBuilds{ false };
+        // EFFECTGRAPH_CONTEXT_FLAGS_DEFERRED_ANALYSIS_COMMIT.
+        bool m_deferredCommit{ false };
+        // Forgets every node's claim on `target` except `keepFor`'s.
+        void ForgetIncrementalTarget(ID3D11Texture2D* target, uint32_t keepFor = 0);
+
+        // Moves the inputs were handed (MoveRects), as clipped, until every
+        // root realized incrementally has reported them in `moved`.
+        struct IngestedMove
+        {
+            uint32_t input{ 0 };
+            EFFECTGRAPH_MOVE_RECT move{};
+            uint64_t generation{ 0 };
+            uint64_t sequence{ 0 };
+        };
+        std::vector<IngestedMove> m_ingestedMoves;
+        // Sequences of moves a second MoveRects on the same input, before a
+        // realize, collapsed to dirty rects; sorted.
+        std::vector<uint64_t> m_collapsedMoves;
+        // The generation the last realize left (moves since are "before a
+        // realize"), and the last generation anything was ingested in: a
+        // MoveRects after it advances the generation, so the rects and moves
+        // before count as older than its moves.
+        uint64_t m_windowStart{ 0 };
+        uint64_t m_lastIngestGeneration{ 0 };
+        // Region generations a root may go without a successful realize
+        // before the moves it has not reported are dropped (it then draws
+        // whole once). Every realize and most MoveRects calls advance one.
+        static constexpr uint64_t cMaxMoveBacklog = 1024;
+        // Drops what every root has reported, and what no root can; never
+        // more than cMaxMoveBacklog generations are held. Runs after every
+        // ingest and every incremental realize, failed or not, so the lists
+        // stay bounded whatever the host's realize calls.
+        void PruneIngestedMoves();
+        // The node and every node it reads, transitively.
+        std::unordered_set<uint32_t> ReadsOf(uint32_t nodeId) const;
+        // What a move is copied through; grown to the largest move.
+        winrt::com_ptr<ID3D11Texture2D> m_moveScratch;
     };
 
     // What every node object shares: which node it stands for, and the
@@ -172,10 +279,20 @@ namespace ShaderLab::Api
         UINT32 GetValueSizeImpl(UINT32 index) const;
         HRESULT GetSubPropertiesImpl(UINT32 index, ID2D1Properties** subProperties) const;
 
+        // IEffectGraphNode2
+        HRESULT GetInvalidRectsImpl(RECT* rects, UINT32 capacity, UINT32* count, BOOL* whole);
+        HRESULT TryGetValuesImpl(IEffectGraphValues** values);
+        HRESULT CommitFieldsImpl(const UINT32* fieldIndices, const float* values, UINT32 count);
+        HRESULT GetCommittedValuesImpl(IEffectGraphValues** values);
+        HRESULT SetCommitPolicyImpl(PCWSTR property, EFFECTGRAPH_COMMIT_POLICY policy);
+
         // IEffectGraphInput, for InputNode
         void InvalidateImpl();
         HRESULT SetTextureImpl(ID3D11Texture2D* texture, EFFECTGRAPH_INPUT_ENCODING encoding);
         HRESULT SetImageImpl(ID2D1Image* image);
+        // IEffectGraphInput2
+        HRESULT InvalidateRectsImpl(const RECT* rects, UINT32 count);
+        HRESULT MoveRectsImpl(const EFFECTGRAPH_MOVE_RECT* moves, UINT32 count);
 
     protected:
         struct Property
@@ -203,7 +320,7 @@ namespace ShaderLab::Api
     // The COM object for a node: the shared behaviour plus the interfaces in
     // `Extra` (IEffectGraphInput for an input node).
     template <typename D, typename... Extra>
-    class NodeT : public winrt::implements<D, IEffectGraphNode, ID2D1Properties, INodeIdentity, Extra...>,
+    class NodeT : public winrt::implements<D, IEffectGraphNode, ID2D1Properties, INodeIdentity, IEffectGraphNode2, Extra...>,
                   public NodeBase
     {
     public:
@@ -244,6 +361,22 @@ namespace ShaderLab::Api
         STDMETHOD_(UINT32, GetNameLength)() override { return GetNameLengthImpl(); }
         STDMETHOD(GetName)(PWSTR buffer, UINT32 bufferCount) override { return GetNameImpl(buffer, bufferCount); }
         STDMETHOD(SetName)(PCWSTR name) override { return SetNameImpl(name); }
+
+        // IEffectGraphNode2
+        STDMETHOD(GetInvalidRects)(RECT* rects, UINT32 capacity, UINT32* count, BOOL* whole) override
+        {
+            return GetInvalidRectsImpl(rects, capacity, count, whole);
+        }
+        STDMETHOD(TryGetValues)(IEffectGraphValues** values) override { return TryGetValuesImpl(values); }
+        STDMETHOD(CommitFields)(const UINT32* fieldIndices, const float* values, UINT32 count) override
+        {
+            return CommitFieldsImpl(fieldIndices, values, count);
+        }
+        STDMETHOD(GetCommittedValues)(IEffectGraphValues** values) override { return GetCommittedValuesImpl(values); }
+        STDMETHOD(SetCommitPolicy)(PCWSTR property, EFFECTGRAPH_COMMIT_POLICY policy) override
+        {
+            return SetCommitPolicyImpl(property, policy);
+        }
     };
 
     class Node : public NodeT<Node>
@@ -252,7 +385,7 @@ namespace ShaderLab::Api
         Node(Context* context, uint32_t nodeId) : NodeT(context, nodeId) {}
     };
 
-    class InputNode : public NodeT<InputNode, IEffectGraphInput>
+    class InputNode : public NodeT<InputNode, IEffectGraphInput, IEffectGraphInput2>
     {
     public:
         InputNode(Context* context, uint32_t nodeId) : NodeT(context, nodeId) {}
@@ -261,6 +394,10 @@ namespace ShaderLab::Api
         STDMETHOD_(void, Invalidate)() override { InvalidateImpl(); }
         STDMETHOD(SetTexture)(ID3D11Texture2D* texture, EFFECTGRAPH_INPUT_ENCODING encoding) override { return SetTextureImpl(texture, encoding); }
         STDMETHOD(SetImage)(ID2D1Image* image) override { return SetImageImpl(image); }
+
+        // IEffectGraphInput2
+        STDMETHOD(InvalidateRects)(const RECT* rects, UINT32 count) override { return InvalidateRectsImpl(rects, count); }
+        STDMETHOD(MoveRects)(const EFFECTGRAPH_MOVE_RECT* moves, UINT32 count) override { return MoveRectsImpl(moves, count); }
     };
 
     // A field's place in a layout, for GetFieldInfo.
