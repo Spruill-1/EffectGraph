@@ -55,6 +55,13 @@ namespace ShaderLab::Rendering::Evaluator
         // gpu-bindable parameter). A fallback build clears them, and its
         // bindings then need the CPU readback.
         uint32_t appliedGpuBits{ 0 };
+        // The build the node last applied dropped GPU routing its plan wanted.
+        // Stays set until a build with the routing is applied, so a clean node
+        // still running the fallback counts (FrameRequest::refuseFallbackBuilds).
+        bool fallbackInUse{ false };
+        // That fallback was chosen while a build keeping the routing was still
+        // compiling for the same selection: pending, not missing.
+        bool fallbackPending{ false };
         std::optional<OptionPrecompile> optionPrecompile;
         // Set while the node renders a fallback and its wanted build compiles.
         std::optional<Effects::BytecodeCompileKey> wanted;
@@ -67,6 +74,8 @@ namespace ShaderLab::Rendering::Evaluator
         std::shared_ptr<const std::vector<uint8_t>> bytes;
         uint32_t bits{ 0 };
         uint64_t options{ 0 };
+        // A build keeping the requested GPU routing is compiling for this selection.
+        bool routingPending{ false };
     };
 
     class VariantSelector

@@ -50,6 +50,19 @@ namespace ShaderLab::Effects
     inline constexpr uint32_t kReduceScratchUints        = 1u << 19;   // 2 MB
     inline constexpr uint32_t kReduceScratchClearedUints = 16384;      // 64 KB
 
+    // Cell reduction contract (SHADERLAB_REDUCE_CELLS; a test asserts the
+    // HLSL matches). Reflection detects the `_SLReduceCells` cbuffer at b2
+    // beside `_SLScratch`; the runner then fills that cbuffer and dispatches
+    // one group per cell it recomputes, out of a kReduceCellColumns x
+    // kReduceCellRows grid over input 0. Each cell's partial slot persists
+    // between dispatches, so only the cells a dirty region touches are
+    // recomputed.
+    inline constexpr uint32_t kReduceCellColumns = 8;
+    inline constexpr uint32_t kReduceCellRows    = 8;
+    inline constexpr uint32_t kReduceCells       = kReduceCellColumns * kReduceCellRows;
+    inline constexpr uint32_t cReduceCellsConstantsSlot = 2;
+    static_assert(kReduceCells <= kReduceGroups, "each cell needs a partial slot");
+
     // Two-pass image contract (SHADERLAB_IMAGE_PASS). Reflection detects the
     // `_SLPassConstants` cbuffer at b1; the runner then binds the scratch
     // buffer at u2 (head zeroed per frame) and a per-output-pixel accumulator

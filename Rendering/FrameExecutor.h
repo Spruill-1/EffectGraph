@@ -2,6 +2,7 @@
 
 #include "pch_engine.h"
 #include "../Graph/GraphModel.h"
+#include "GraphEvaluator.h"
 
 namespace ShaderLab::Rendering
 {
@@ -47,6 +48,21 @@ namespace ShaderLab::Rendering
         // Runs after compute in a draw session of its own, with `target`
         // bound. With no draw the frame opens no session for it.
         std::function<void(ID2D1DeviceContext5*)> draw;
+        // Roots `draw` draws every pending rect of (GraphEvaluator::
+        // PendingRegion). Each one's pending region is cleared when EndDraw
+        // succeeds and the root has an output, no compile pending and no
+        // error; otherwise it stays pending for the next draw.
+        std::vector<uint32_t> acknowledgeRoots;
+        // Nodes whose D2D output is not cached this frame (GraphEvaluator::
+        // SetUncachedNodes): roots drawn incrementally, so a clipped draw and
+        // a whole one round the same way.
+        std::vector<uint32_t> uncachedRoots;
+        // A frame in which any node chose or still runs a build that serves a
+        // GPU binding from the CPU (AnalysisReadbackStats::fallbackBuilds or
+        // fallbackBuildsPending moved, or GraphEvaluator::FallbacksInUse is
+        // non-zero) draws nothing and acknowledges no root:
+        // EFFECTGRAPH_CONTEXT_FLAGS_NO_FALLBACK.
+        bool refuseFallbackBuilds{ false };
     };
 
     struct FrameResult
@@ -64,6 +80,14 @@ namespace ShaderLab::Rendering
         bool computeRan{ false };
         // Compute dispatches issued this frame.
         uint32_t dispatches{ 0 };
+        // Builds chosen this frame without the GPU binding the plan wanted:
+        // missing, or still compiling.
+        uint32_t fallbackBuilds{ 0 };
+        uint32_t fallbackBuildsPending{ 0 };
+        // Needed nodes running a fallback build after the passes, whenever chosen.
+        FallbackBuildsInUse fallbacksInUse;
+        // The draw did not run: FrameRequest::refuseFallbackBuilds found one.
+        bool fallbackRefused{ false };
         // Phase boundaries: drawEnd is before EndDraw, end after it.
         std::chrono::steady_clock::time_point start, evaluateEnd, computeEnd, drawEnd, end;
     };

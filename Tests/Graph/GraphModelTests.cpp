@@ -101,13 +101,13 @@ namespace
                 return order.size() == 5 && at(a) < at(stats) && at(stats) < at(gain);
             }());
 
-            for (auto& n : g.MutableNodes()) n.dirty = false;
+            for (auto& n : g.MutableNodes()) n.ClearDirty();
             ShaderLab::Graph::MarkNodeChanged(*g.FindNode(a));
             g.PropagateDirtyDownstream();
-            TEST("Dirty_PropagateFollowsEdges", g.FindNode(stats)->dirty);
-            TEST("Dirty_PropagateLeavesBindingConsumers", !g.FindNode(gain)->dirty && !g.FindNode(b)->dirty);
+            TEST("Dirty_PropagateFollowsEdges", g.FindNode(stats)->IsDirty());
+            TEST("Dirty_PropagateLeavesBindingConsumers", !g.FindNode(gain)->IsDirty() && !g.FindNode(b)->IsDirty());
 
-            for (auto& n : g.MutableNodes()) n.dirty = false;
+            for (auto& n : g.MutableNodes()) n.ClearDirty();
             const uint32_t roots[] = { gain };
             g.ComputeNeeded(roots);
             TEST("Demand_RootAndItsEdges", g.FindNode(gain)->needed && g.FindNode(b)->needed);
@@ -387,6 +387,58 @@ namespace
         empty.runtimeError = L"Failed to decode image: gone.png";
         sf.PrepareSourceNode(empty, g_dc.get(), g_d3dDevice.get(), g_d3dContext.get());
         TEST("Source_ClearedPathClearsDecodeError", empty.runtimeError.empty());
+    }
+
+    // A binding's commit policy survives a save and a reload; an unknown tag
+    // reads as exact and says so on the node.
+    SL_TEST_CASE(TestCommitPolicyRoundTrip, Tag::Fast)
+    {
+        printf("\n=== Commit policy save and load ===\n");
+        using namespace ShaderLab::Graph;
+        auto& registry = ShaderLab::Effects::ShaderLabEffects::Instance();
+        const auto* floatParam = registry.FindByName(L"Float Parameter");
+        GraphModel g;
+        const uint32_t source = g.AddNode(ShaderLab::Effects::ShaderLabEffects::CreateNode(*floatParam));
+        const CommitPolicy policies[] = { CommitPolicy::Exact, CommitPolicy::Immediate, CommitPolicy::Threshold,
+                                          CommitPolicy::Hosted };
+        uint32_t consumers[4]{};
+        bool bound = true;
+        for (size_t i = 0; i < 4; ++i)
+        {
+            consumers[i] = g.AddNode(ShaderLab::Effects::ShaderLabEffects::CreateNode(*floatParam));
+            bound &= g.BindProperty(consumers[i], L"Value", source, L"Value").empty();
+            bound &= ShaderLab::Graph::SetBindingCommitPolicy(g, consumers[i], L"Value", policies[i]);
+        }
+        TEST("CommitPolicy_Bound", bound);
+        const std::wstring json(g.ToJson());
+        const auto policyOf = [](const GraphModel& graph, uint32_t id) -> std::optional<CommitPolicy>
+        {
+            const auto* node = graph.FindNode(id);
+            if (!node) return std::nullopt;
+            const auto it = node->propertyBindings.find(L"Value");
+            if (it == node->propertyBindings.end()) return std::nullopt;
+            return it->second.commitPolicy;
+        };
+        auto loaded = GraphModel::FromJson(winrt::hstring(json));
+        bool same = true, clean = true;
+        for (size_t i = 0; i < 4; ++i)
+        {
+            same &= policyOf(loaded, consumers[i]) == policies[i];
+            clean &= loaded.FindNode(consumers[i]) && loaded.FindNode(consumers[i])->runtimeError.empty();
+        }
+        TEST("CommitPolicy_RoundTrips", same && clean);
+        TEST("CommitPolicy_ExactNotWritten", json.find(L"\"exact\"") == std::wstring::npos &&
+             json.find(L"\"hosted\"") != std::wstring::npos && json.find(L"\"threshold\"") != std::wstring::npos &&
+             json.find(L"\"immediate\"") != std::wstring::npos);
+
+        std::wstring unknown = json;
+        const auto at = unknown.find(L"\"hosted\"");
+        if (at != std::wstring::npos) unknown.replace(at, 8, L"\"Hosted\"");
+        auto bad = GraphModel::FromJson(winrt::hstring(unknown));
+        const auto* badNode = bad.FindNode(consumers[3]);
+        TEST("CommitPolicy_UnknownTagReadsExact", at != std::wstring::npos &&
+             policyOf(bad, consumers[3]) == CommitPolicy::Exact && badNode &&
+             badNode->runtimeError.find(L"commitPolicy") != std::wstring::npos);
     }
 
     SL_TEST_CASE(TestClockNode, Tag::Fast)

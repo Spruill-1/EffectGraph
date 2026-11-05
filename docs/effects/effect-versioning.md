@@ -9,6 +9,7 @@ Each ShaderLab effect carries an `effectId` (stable GUID) and `effectVersion` (i
 - **"Update Effects (N)" batch button**: Toolbar button to upgrade all outdated nodes at once.
 - **Property preservation**: On upgrade, existing user property values are preserved where parameter names match.
 - **Renamed ids**: `ShaderLabEffects::FindById` resolves a retired id through the `scLegacyEffectIds` table (`Perceptual Gamut Map` -> `ICtCp Gamut Map`), so a graph saved with the old id loads and offers the update.
+- **A saved older version keeps its own HLSL.** A graph saved with Luminance Statistics 6 (or Channel / Chromaticity Statistics 2) still dispatches the 64-group interleaved reduction its shader declares (`SHADERLAB_REDUCE_SCRATCH`) until the node is upgraded; only the cell versions (7, 3 and 3, `DispatchShape::ReduceCells`) recompute just the cells a dirty rect touches (decision #258).
 - **Version guard**: `TestEffectVersionGuard` pins every built-in's `effectVersion` beside a fingerprint of its HLSL (comments and whitespace removed), inputs, parameter names, types, defaults, enum labels and analysis fields (decision #203). Changing any of those fails the test with the row to paste; bump `effectVersion` first if saved graphs should be offered the change. A comment-only HLSL edit leaves the fingerprint unchanged. `LibraryVersion()` is the sum of the built-in versions, so it rises with any bump but does not identify a catalog.
 
 

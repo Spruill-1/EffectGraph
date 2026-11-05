@@ -194,12 +194,17 @@ namespace ShaderLab::Effects
     }
 
     IFACEMETHODIMP CustomPixelShaderEffect::MapInvalidRect(
-        UINT32 /*inputIndex*/,
+        UINT32 inputIndex,
         D2D1_RECT_L invalidInputRect,
         D2D1_RECT_L* invalidOutputRect) const
     {
-        // Any change in an input invalidates the same region of the output.
-        *invalidOutputRect = invalidInputRect;
+        if (!invalidOutputRect) return E_INVALIDARG;
+        // TRIVIAL_SAMPLING: output pixel N reads image pin pixel N, so a change
+        // there invalidates the same rect. A lookup or analysis pin is read at
+        // computed coordinates, and a fixed-size output (a generator, a
+        // diagram) is not laid out in its input's pixels: all of it.
+        const bool fixedOutput = m_fixedOutputWidth > 0 && m_fixedOutputHeight > 0;
+        *invalidOutputRect = (!fixedOutput && inputIndex < ImageInputCount()) ? invalidInputRect : cInfiniteRectL;
         return S_OK;
     }
 
@@ -209,23 +214,39 @@ namespace ShaderLab::Effects
 
     HRESULT CustomPixelShaderEffect::ForceLoadShader()
     {
-        if (!m_shaderDirty || m_shaderBytecode.empty())
-            return S_OK;
-        // Before D2D has initialised the effect, its first PrepareForRender loads it.
-        if (!m_effectContext || !m_drawInfo)
-            return S_OK;
-        if (m_shaderGuid == GUID{})
-            CoCreateGuid(&m_shaderGuid);
+        if (m_shaderDirty && !m_shaderBytecode.empty())
+        {
+            // Before D2D has initialised the effect, its first PrepareForRender loads it.
+            if (!m_effectContext || !m_drawInfo)
+                return S_OK;
+            if (m_shaderGuid == GUID{})
+                CoCreateGuid(&m_shaderGuid);
 
-        HRESULT hr = m_effectContext->LoadPixelShader(
-            m_shaderGuid,
-            m_shaderBytecode.data(),
-            static_cast<UINT32>(m_shaderBytecode.size()));
-        if (SUCCEEDED(hr))
-            hr = m_drawInfo->SetPixelShader(m_shaderGuid, D2D1_PIXEL_OPTIONS_TRIVIAL_SAMPLING);
-        if (FAILED(hr))
-            return hr;
-        m_shaderDirty = false;
+            HRESULT hr = m_effectContext->LoadPixelShader(
+                m_shaderGuid,
+                m_shaderBytecode.data(),
+                static_cast<UINT32>(m_shaderBytecode.size()));
+            if (SUCCEEDED(hr))
+                hr = m_drawInfo->SetPixelShader(m_shaderGuid, D2D1_PIXEL_OPTIONS_TRIVIAL_SAMPLING);
+            if (FAILED(hr))
+                return hr;
+            m_shaderDirty = false;
+            m_inputFilterDirty = true;
+        }
+        if (!m_inputFilterDirty || m_shaderDirty || !m_drawInfo || m_shaderBytecode.empty())
+            return S_OK;
+
+        // Image pins are read at their own pixel (TRIVIAL_SAMPLING), and D2D
+        // interpolates TEXCOORD with a small error that depends on how it
+        // splits the draw. A linear filter turns that error into a blend with
+        // the neighbour, so a pixel drawn inside a clipped rect and as part
+        // of the whole image differed; a point filter reads the texel the
+        // coordinate falls in. Lookup pins keep the linear default.
+        const D2D1_FILTER filter = m_pointImageFilter ? D2D1_FILTER_MIN_MAG_MIP_POINT : D2D1_FILTER_MIN_MAG_MIP_LINEAR;
+        for (UINT32 i = 0; i < ImageInputCount(); ++i)
+            if (HRESULT hr = m_drawInfo->SetInputDescription(i, { filter, 0 }); FAILED(hr))
+                return hr;
+        m_inputFilterDirty = false;
         return S_OK;
     }
 

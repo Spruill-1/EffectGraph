@@ -1,6 +1,7 @@
 #include "pch_engine.h"
 #include "NodeContracts.h"
 #include "EffectNode.h"
+#include "EffectEdge.h"
 
 namespace ShaderLab::Graph
 {
@@ -22,6 +23,7 @@ namespace ShaderLab::Graph
             { DispatchShape::SingleGroup,    L"singleGroup" },
             { DispatchShape::ReduceGroups,   L"reduceGroups" },
             { DispatchShape::ImagePass,      L"imagePass" },
+            { DispatchShape::ReduceCells,    L"reduceCells" },
         };
 
         struct InjectedName { InjectedConstants flag; const wchar_t* tag; };
@@ -161,5 +163,93 @@ namespace ShaderLab::Graph
         def.dispatchShape = DeriveDispatchShape(def);
         def.outputExtent = DeriveOutputExtent(def, properties);
         def.injectedConstants = DeriveInjectedConstants(properties);
+    }
+
+    namespace
+    {
+        bool IsD3D11ComputeNode(const EffectNode& node)
+        {
+            return node.customEffect.has_value() && node.customEffect->shaderType == CustomShaderType::D3D11ComputeShader;
+        }
+
+        // Image pins first, then lookup pins; at least one image pin.
+        uint32_t ImagePinCount(const CustomEffectDefinition& def)
+        {
+            const uint32_t declared = static_cast<uint32_t>((std::max)(size_t(1), def.inputNames.size()));
+            return declared - (std::min)(def.lookupInputCount, declared - 1);
+        }
+    }
+
+    std::span<const GUID> RegionIdentityBuiltIns()
+    {
+        // Each row is one the oracle admitted; see its test before adding one.
+        static const GUID cIdentity[] = {
+            CLSID_D2D1ColorMatrix,
+            CLSID_D2D1Brightness,
+            CLSID_D2D1Contrast,
+            CLSID_D2D1Exposure,
+            CLSID_D2D1Grayscale,
+            CLSID_D2D1HueRotation,
+            CLSID_D2D1Invert,
+            CLSID_D2D1Saturation,
+            CLSID_D2D1Sepia,
+            CLSID_D2D1TemperatureTint,
+            CLSID_D2D1Posterize,
+            CLSID_D2D1HdrToneMap,
+            CLSID_D2D1WhiteLevelAdjustment,
+            CLSID_D2D1Opacity,
+            CLSID_D2D1Blend,
+            CLSID_D2D1Composite,
+            CLSID_D2D1AlphaMask,
+        };
+        return cIdentity;
+    }
+
+    bool IsRegionIdentityBuiltIn(const GUID& clsid)
+    {
+        return std::ranges::any_of(RegionIdentityBuiltIns(), [&](const GUID& g) { return IsEqualGUID(g, clsid); });
+    }
+
+    DirtyRegion EmittedRegion(const EffectNode& node, const DirtyRegion& region)
+    {
+        return IsD3D11ComputeNode(node) && !region.IsNone() ? DirtyRegion::Whole() : region;
+    }
+
+    DirtyRegion MapRegion(const EffectNode& src, const EffectNode& dst, const EffectEdge& edge, const DirtyRegion& region)
+    {
+        if (region.IsNone()) return region;
+        // A D3D11 compute node's region is its input region; what it emits
+        // changed whole.
+        if (IsD3D11ComputeNode(src)) return DirtyRegion::Whole();
+        if (region.IsWhole()) return region;
+        if (dst.type == NodeType::Output) return region;
+        // Into a D3D11 compute node's image pin the rects stay as they are,
+        // in that input's texel space: the node's input region, which the
+        // analysis change gate judges its dispatch by.
+        // Moves change a reduction's input at their destinations only.
+        if (IsD3D11ComputeNode(dst) && edge.destPin < ImagePinCount(*dst.customEffect))
+            return region.WithMovesCollapsed();
+        // A custom pixel shader declares TRIVIAL_SAMPLING: output pixel N
+        // reads input pixel N of each image pin. Lookup pins, read at
+        // computed coordinates, follow the image pins. A fixed output extent
+        // (a diagram: CIE Chromaticity Plot, ICtCp Boundary) is not laid out
+        // in its input's pixels. A move stays a move only through a
+        // shift-invariant shader with one image pin: with a second, the
+        // moved pixels would meet the other input's unmoved ones.
+        if (dst.type == NodeType::PixelShader && dst.customEffect.has_value() && !dst.IsParameterNode() &&
+            dst.customEffect->shaderType == CustomShaderType::PixelShader &&
+            dst.customEffect->outputExtent.sizeParam.empty())
+        {
+            const uint32_t imagePins = ImagePinCount(*dst.customEffect);
+            if (edge.destPin < imagePins)
+                return dst.customEffect->shiftInvariant && imagePins == 1 ? region : region.WithMovesCollapsed();
+        }
+        // A per-pixel built-in Direct2D maps identically on every input.
+        // Nothing says it is shift-invariant, so moves collapse.
+        if (dst.type == NodeType::BuiltInEffect && dst.effectClsid.has_value() &&
+            IsRegionIdentityBuiltIn(*dst.effectClsid))
+            return region.WithMovesCollapsed();
+        // Other built-ins, D2D compute, a lookup pin and every other pin.
+        return DirtyRegion::Whole();
     }
 }

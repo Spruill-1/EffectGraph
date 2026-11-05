@@ -34,7 +34,7 @@ namespace ShaderLab::Effects
             if (it != node.properties.end())
                 it->second = value;
         }
-        node.dirty = true;
+        node.MarkDirty();
         node.cachedOutput = nullptr;   // the evaluator's output for the old definition
         return true;
     }

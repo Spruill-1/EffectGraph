@@ -2,6 +2,7 @@
 
 #include "pch_engine.h"
 #include "PropertyValue.h"
+#include "DirtyRegion.h"
 
 #include <string_view>
 
@@ -41,6 +42,7 @@ namespace ShaderLab::Graph
         SingleGroup    = 1,  // one group; the shader loops over its input itself
         ReduceGroups   = 2,  // the runner sizes it: a SHADERLAB reduction over scratch
         ImagePass      = 3,  // the runner sizes it: SHADERLAB_IMAGE_PASS, two passes
+        ReduceCells    = 4,  // the runner sizes it: SHADERLAB_REDUCE_CELLS, one group per cell recomputed
     };
 
     // A fixed output size read from a float property: sizeParam x columns
@@ -107,4 +109,34 @@ namespace ShaderLab::Graph
     // map of parameter defaults alone loses InputMask / OutputW / OutputH.
     void DeriveContracts(CustomEffectDefinition& def,
         const std::map<std::wstring, PropertyValue>& properties);
+
+    struct EffectNode;
+    struct EffectEdge;
+
+    // The built-in Direct2D effects a change passes through as the same
+    // rects: those whose invalidation Direct2D itself maps to the identity on
+    // every input at every property value. A hand-kept list, never probed at
+    // run time; a CLSID joins it only when the oracle
+    // (Tests/Effects/D2DParityTests.cpp) shows identity across its property
+    // sweep, and deleting a row maps that effect Whole again.
+    std::span<const GUID> RegionIdentityBuiltIns();
+    bool IsRegionIdentityBuiltIn(const GUID& clsid);
+
+    // What a change to `region` of `src` changes in `dst`, along the image
+    // edge `edge`: the same rects into a custom pixel shader's image pin or
+    // an Output, into an allowlisted built-in (RegionIdentityBuiltIns), and
+    // into a D3D11 compute node's image pin, where they are its input region
+    // rather than its output; everything into anything else (another
+    // built-in, a lookup pin, a D2D compute node) and out of a D3D11
+    // compute node. None stays None. Regions never cross a property binding;
+    // the evaluator wakes bound consumers itself. Moves stay moves into an
+    // Output and into a shift-invariant pixel shader's only image pin
+    // (CustomEffectDefinition::shiftInvariant); anywhere else each becomes a
+    // dirty rect at its destination.
+    DirtyRegion MapRegion(const EffectNode& src, const EffectNode& dst, const EffectEdge& edge, const DirtyRegion& region);
+
+    // What a node with `region` pending changed in its own output: the
+    // region itself, or Whole for a D3D11 compute node, whose region is its
+    // input region.
+    DirtyRegion EmittedRegion(const EffectNode& node, const DirtyRegion& region);
 }

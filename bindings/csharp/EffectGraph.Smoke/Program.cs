@@ -3,6 +3,7 @@
 // reads statistics back, on the CPU and from the values buffer. Exit code 0
 // when every check holds.
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using EffectGraph;
 
@@ -46,7 +47,27 @@ unsafe
 
 Console.WriteLine("EffectGraph from C#");
 Check("Builtins_Embedded", BuiltInEffects.Available.Contains("luminance_statistics"));
-BuiltInEffects.Register("Luminance Statistics");
+// Under --expect-v1 (a 1.0.x DLL; see below) this package's blobs carry a
+// newer shader contract, which the old DLL refuses; Pack.ps1 puts the 1.0
+// package's own blob beside the program for the rest of the run.
+if (args.Contains("--expect-v1"))
+{
+    try
+    {
+        BuiltInEffects.Register("Luminance Statistics");
+        Check("V1_NewerContractRefused", false);
+    }
+    catch (COMException e)
+    {
+        Check("V1_NewerContractRefused", e.HResult == HResults.IncompatibleEffect);
+    }
+    EffectGraphLibrary.RegisterEffect(File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory,
+                                                                     "luminance_statistics.effectblob")));
+}
+else
+{
+    BuiltInEffects.Register("Luminance Statistics");
+}
 
 var context = EffectGraphLibrary.CreateContext(devicePtr);
 var input = context.CreateTextureInput(texture, InputEncoding.ScRgbLinear);
@@ -81,6 +102,52 @@ try
 catch (COMException e)
 {
     Check("NotRegistered_Refused", e.HResult == HResults.EffectNotIncluded);
+}
+
+// 1.1: the dirty-rect interfaces, reached by QueryInterface. Run with
+// --expect-v1 against a 1.0.x EffectGraph.dll (Pack.ps1 does), where every
+// object answers each v2 IID with E_NOINTERFACE, which the cast helpers
+// surface as InvalidCastException, and the 1.0 calls above still work.
+bool expectV1 = args.Contains("--expect-v1");
+Console.WriteLine(expectV1 ? "  [info] expecting a 1.0 DLL: no v2 interfaces" : "  [info] expecting the 1.1 interfaces");
+static bool CastFails(Action cast)
+{
+    try { cast(); return false; }
+    catch (InvalidCastException) { return true; }
+}
+if (expectV1)
+{
+    Check("V1_ContextIsNotContext2", context is not IEffectGraphContext2 && CastFails(() => context.AsContext2()));
+    Check("V1_EffectIsNotNode2", stats is not IEffectGraphNode2 && CastFails(() => stats.AsNode2()));
+    Check("V1_EffectIsNotInput2", stats is not IEffectGraphInput2 && CastFails(() => stats.AsInput2()));
+    Check("V1_InputIsNotNode2", input is not IEffectGraphNode2 && CastFails(() => input.AsNode2()));
+    Check("V1_InputIsNotInput2", input is not IEffectGraphInput2 && CastFails(() => input.AsInput2()));
+    Check("V1_InputIsNotContext2", input is not IEffectGraphContext2);
+    // The 1.0 calls still work after the failed casts.
+    var again = context.CreateEffect("Luminance Statistics");
+    again.SetInput(0, input);
+    Check("V1_StillWorks", Math.Abs(again.GetValues().GetFloat("Max") - 240.0f) < 0.05f);
+    Marshal.ReleaseComObject(again);
+}
+else
+{
+    Check("V2_Context", context is IEffectGraphContext2);
+    Check("V2_InputHasBoth", input is IEffectGraphInput2 && input is IEffectGraphNode2);
+    Check("V2_EffectIsNode2", stats is IEffectGraphNode2);
+    Check("V2_EffectIsNotInput2", stats is not IEffectGraphInput2 && CastFails(() => stats.AsInput2()));
+    var input2 = input.AsInput2();
+    Check("V2_InvalidateRects", input2.InvalidateRects(new[] { new Rect(0, 0, 8, 4) }, 1) == 0);
+    // Whole: no RealizeToIncremental has drawn the input yet.
+    var invalid = new Rect[4];
+    Check("V2_GetInvalidRects", input.AsNode2().GetInvalidRects(invalid, 4, out uint invalidCount, out int whole) == 0 &&
+                                whole != 0 && invalidCount == 0);
+    // An empty move changes nothing (S_FALSE); a real one is taken.
+    Check("V2_MoveRectsEmpty", input2.MoveRects(new MoveRect[1], 1) == 1);
+    Check("V2_MoveRects", input2.MoveRects(new[] { new MoveRect { SourceX = 0, SourceY = 0, Destination = new Rect(4, 0, 8, 4) } }, 1) == 0);
+    // Without ContextFlags.DeferredAnalysisCommit there is nothing to poll.
+    const int E_NOT_VALID_STATE = unchecked((int)0x8007139F);
+    Check("V2_PollReadbacksNeedsFlag", context.AsContext2().PollReadbacks() == E_NOT_VALID_STATE);
+    Check("V2_TryGetValuesNeedsFlag", stats.AsNode2().TryGetValues(out var landed) == E_NOT_VALID_STATE && landed == null);
 }
 
 // Every context released (node objects hold theirs), then the DLL's threads.

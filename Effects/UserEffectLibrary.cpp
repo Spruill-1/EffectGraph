@@ -79,6 +79,7 @@ namespace ShaderLab::Effects
             descriptor.inputNames = def.inputNames;
             descriptor.lookupInputCount = def.lookupInputCount;
             descriptor.variadicInputs = def.variadicInputs;
+            descriptor.shiftInvariant = def.shiftInvariant;
             descriptor.parameters = def.parameters;
             descriptor.analysisFields = def.analysisFields;
             descriptor.analysisOutputType = def.analysisOutputType;

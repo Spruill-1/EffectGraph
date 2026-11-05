@@ -12,6 +12,11 @@ namespace ShaderLab::Effects
     // Input names I0 .. I<count-1>.
     std::vector<std::wstring> NumberedInputNames(UINT32 count);
 
+    // An infinite rect, MapInvalidRect's answer for "all of the output".
+    // Direct2D reports it as it is, unclamped (about +-2^31): intersect it
+    // with the output's bounds before using it.
+    inline constexpr D2D1_RECT_L cInfiniteRectL{ LONG_MIN, LONG_MIN, LONG_MAX, LONG_MAX };
+
     // What the custom shader effects share: COM identity, creation through
     // Direct2D with the impl handed back, the input count, and the shader
     // bytecode and constant buffer the host sets outside D2D's property

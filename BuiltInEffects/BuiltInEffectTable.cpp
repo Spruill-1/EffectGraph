@@ -3396,11 +3396,11 @@ void main(uint3 id : SV_DispatchThreadID)
 // per-luminance stats use Luminance Statistics; for chromaticity stats
 // use Chromaticity Statistics.
 //
-// Multi-group reduction (SHADERLAB_REDUCE_SCRATCH): SHADERLAB_REDUCE_GROUPS
-// groups of 32x32 threads each take every G-th row, reduce into groupshared,
-// and write a partial block to scratch; the last group to finish folds the
-// partials and computes median/P95 from the merged 256-bin histogram, so the
-// scan is spread over many CUs.
+// Cell reduction (SHADERLAB_REDUCE_CELLS): the image is an 8x8 grid of cells,
+// one 32x32-thread group per cell recomputed, each writing its cell's partial
+// block and histogram to scratch; the last group to finish folds every cell's
+// slot and computes median/P95 from the merged 256-bin histogram. A dirty
+// region recomputes only the cells it touches.
 //
 // Result[SL_FIELD_<name>]: one float per analysis field (Nonzero% is SL_FIELD_Nonzero_).
 
@@ -3408,7 +3408,7 @@ void main(uint3 id : SV_DispatchThreadID)
 
 Texture2D<float4> Source : register(t0);
 RWStructuredBuffer<float4> Result : register(u0);
-SHADERLAB_REDUCE_SCRATCH
+SHADERLAB_REDUCE_CELLS
 
 cbuffer Constants : register(b0)
 {
@@ -3453,7 +3453,8 @@ void Combine(uint dst, uint src)
 void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
 {
     uint tid = GTid.x + GTid.y * GROUP_SIZE;
-    uint g = Gid.x;
+    uint g = ShaderLabReduceCell(Gid.x);
+    uint4 cell = ShaderLabCellRect(g, Width, Height);
 
     for (uint bi = tid; bi < HIST_BINS; bi += THREAD_COUNT)
         gs_hist[bi] = 0;
@@ -3466,9 +3467,9 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
     uint  tTotal = 0;
     uint  tNonzero = 0;
 
-    for (uint y = g; y < Height; y += SHADERLAB_REDUCE_GROUPS)
+    for (uint y = cell.y + GTid.y; y < cell.w; y += GROUP_SIZE)
     {
-        for (uint x = tid; x < Width; x += THREAD_COUNT)
+        for (uint x = cell.x + GTid.x; x < cell.z; x += GROUP_SIZE)
         {
             float4 pix = Source.Load(int3(x, y, 0));
             float v = GetValue(pix, Channel);
@@ -3512,8 +3513,8 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
     if (!ShaderLabReduceIsLastGroup(tid))
         return;
 
-    // Last group: fold every group's partials; idle threads hold the identity.
-    if (tid < SHADERLAB_REDUCE_GROUPS)
+    // Last group: fold every cell's partials; idle threads hold the identity.
+    if (tid < SlotCount)
     {
         gs_min[tid]     = asfloat(ShaderLabScratchLoad(SHADERLAB_PARTIAL_WORD(tid, 0)));
         gs_max[tid]     = asfloat(ShaderLabScratchLoad(SHADERLAB_PARTIAL_WORD(tid, 1)));
@@ -3527,7 +3528,7 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
         gs_min[tid] = 1e30; gs_max[tid] = -1e30; gs_sum[tid] = 0;
         gs_count[tid] = 0; gs_total[tid] = 0; gs_nonzero[tid] = 0;
     }
-    ShaderLabMergeHistograms(gs_hist, HIST_BINS, tid, THREAD_COUNT)
+    ShaderLabMergeHistogramSlots(gs_hist, HIST_BINS, tid, THREAD_COUNT, SlotCount)
     ShaderLabTreeReduce(tid, THREAD_COUNT, Combine)
 
     if (tid == 0)
@@ -3560,8 +3561,8 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
 )HLSL";
             ShaderLabEffectDescriptor desc;
             desc.name = L"Channel Statistics";
-            desc.effectId = L"Channel Statistics"; desc.effectVersion = 2;
-            desc.dispatchShape = Graph::DispatchShape::ReduceGroups;
+            desc.effectId = L"Channel Statistics"; desc.effectVersion = 3;
+            desc.dispatchShape = Graph::DispatchShape::ReduceCells;
             desc.category = L"Analysis";
             desc.subcategory = L"Statistics";
             desc.shaderType = Graph::CustomShaderType::D3D11ComputeShader;
@@ -3614,15 +3615,18 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
 // The margin keeps SDR white (W/80, a few FP16 / dot-product ulps above W)
 // from counting; 1% above white is under 0.8 dE ITP from it.
 
-// Multi-group reduction (SHADERLAB_REDUCE_SCRATCH): SHADERLAB_REDUCE_GROUPS
-// groups each take every G-th row and write a partial block; the last group
-// to finish folds them, so the memory-bound scan is spread over many CUs.
+// Cell reduction (SHADERLAB_REDUCE_CELLS): one group per cell of an 8x8 grid
+// writes that cell's partial block and histogram; the last group to finish
+// folds every cell's slot, so the memory-bound scan is spread over many CUs
+// and a dirty region recomputes only the cells it touches. Every field comes
+// from integer counts and from per-cell sums taken in a fixed order, so the
+// incremental result equals a whole dispatch's bit for bit.
 
 #include "shaderlab_params.hlsli"
 
 Texture2D<float4> Source : register(t0);
 RWStructuredBuffer<float4> Result : register(u0);
-SHADERLAB_REDUCE_SCRATCH
+SHADERLAB_REDUCE_CELLS
 
 cbuffer Constants : register(b0)
 {
@@ -3672,7 +3676,8 @@ float BinNits(uint bin)
 void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
 {
     uint tid = GTid.x + GTid.y * GROUP_SIZE;
-    uint g = Gid.x;
+    uint g = ShaderLabReduceCell(Gid.x);
+    uint4 cell = ShaderLabCellRect(g, Width, Height);
 
     for (uint bi = tid; bi < HIST_BINS; bi += THREAD_COUNT)
         gs_hist[bi] = 0;
@@ -3688,9 +3693,9 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
     uint  tCount = 0;
     uint  tClipped = 0;
 
-    for (uint y = g; y < Height; y += SHADERLAB_REDUCE_GROUPS)
+    for (uint y = cell.y + GTid.y; y < cell.w; y += GROUP_SIZE)
     {
-        for (uint x = tid; x < Width; x += THREAD_COUNT)
+        for (uint x = cell.x + GTid.x; x < cell.z; x += GROUP_SIZE)
         {
             float4 pix = Source.Load(int3(x, y, 0));
             float Y = max(0.0, dot(pix.rgb, float3(0.2126, 0.7152, 0.0722)));
@@ -3732,8 +3737,8 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
     if (!ShaderLabReduceIsLastGroup(tid))
         return;
 
-    // Last group: fold every group's partials; idle threads hold the identity.
-    if (tid < SHADERLAB_REDUCE_GROUPS)
+    // Last group: fold every cell's partials; idle threads hold the identity.
+    if (tid < SlotCount)
     {
         gs_min[tid]     = asfloat(ShaderLabScratchLoad(SHADERLAB_PARTIAL_WORD(tid, 0)));
         gs_max[tid]     = asfloat(ShaderLabScratchLoad(SHADERLAB_PARTIAL_WORD(tid, 1)));
@@ -3747,7 +3752,7 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
         gs_min[tid] = 1e30; gs_max[tid] = -1e30; gs_sum[tid] = 0;
         gs_logsum[tid] = 0; gs_count[tid] = 0; gs_clipped[tid] = 0;
     }
-    ShaderLabMergeHistograms(gs_hist, HIST_BINS, tid, THREAD_COUNT)
+    ShaderLabMergeHistogramSlots(gs_hist, HIST_BINS, tid, THREAD_COUNT, SlotCount)
     ShaderLabTreeReduce(tid, THREAD_COUNT, Combine)
 
     if (tid == 0)
@@ -3815,8 +3820,8 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
 )HLSL";
             ShaderLabEffectDescriptor desc;
             desc.name = L"Luminance Statistics";
-            desc.effectId = L"Luminance Statistics"; desc.effectVersion = 6;
-            desc.dispatchShape = Graph::DispatchShape::ReduceGroups;
+            desc.effectId = L"Luminance Statistics"; desc.effectVersion = 7;
+            desc.dispatchShape = Graph::DispatchShape::ReduceCells;
             desc.category = L"Analysis";
             desc.subcategory = L"Statistics";
             desc.shaderType = Graph::CustomShaderType::D3D11ComputeShader;
@@ -3840,7 +3845,9 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
                 { L"AvgLog",          Graph::AnalysisFieldType::Float },
                 { L"ClippedFraction", Graph::AnalysisFieldType::Float },
                 { L"Samples",         Graph::AnalysisFieldType::Float },
-                { L"WhiteErrorBudget", Graph::AnalysisFieldType::Float },
+                // changeThreshold (dE ITP) is provisional until the change
+                // rates of real desktop content size it (decision #251).
+                { L"WhiteErrorBudget", Graph::AnalysisFieldType::Float, 0, false, 0.05f },
                 { L"HighlightP99",     Graph::AnalysisFieldType::Float },
             };
             effects.push_back(std::move(desc));
@@ -3863,14 +3870,14 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
 //   [4] MeanHueDeg   = degrees from atan2(Cp, Ct), wrapped 0..360
 //   [5] Samples
 
-// Multi-group reduction (SHADERLAB_REDUCE_SCRATCH); see Luminance Statistics.
+// Cell reduction (SHADERLAB_REDUCE_CELLS); see Luminance Statistics.
 
 #include "shaderlab_colormath.hlsli"
 #include "shaderlab_params.hlsli"
 
 Texture2D<float4> Source : register(t0);
 RWStructuredBuffer<float4> Result : register(u0);
-SHADERLAB_REDUCE_SCRATCH
+SHADERLAB_REDUCE_CELLS
 
 cbuffer Constants : register(b0)
 {
@@ -3904,7 +3911,8 @@ void Combine(uint dst, uint src)
 void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
 {
     uint tid = GTid.x + GTid.y * GROUP_SIZE;
-    uint g = Gid.x;
+    uint g = ShaderLabReduceCell(Gid.x);
+    uint4 cell = ShaderLabCellRect(g, Width, Height);
 
     float tCt = 0, tCp = 0;
     float tChroma = 0;
@@ -3912,9 +3920,9 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
     float tHx = 0, tHy = 0;
     uint  tCount = 0;
 
-    for (uint y = g; y < Height; y += SHADERLAB_REDUCE_GROUPS)
+    for (uint y = cell.y + GTid.y; y < cell.w; y += GROUP_SIZE)
     {
-        for (uint x = tid; x < Width; x += THREAD_COUNT)
+        for (uint x = cell.x + GTid.x; x < cell.z; x += GROUP_SIZE)
         {
             float4 pix = Source.Load(int3(x, y, 0));
             float3 ictcp = ScRGBToICtCp(pix.rgb);
@@ -3958,8 +3966,8 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
     if (!ShaderLabReduceIsLastGroup(tid))
         return;
 
-    // Last group: fold every group's partials; idle threads hold the identity.
-    if (tid < SHADERLAB_REDUCE_GROUPS)
+    // Last group: fold every cell's partials; idle threads hold the identity.
+    if (tid < SlotCount)
     {
         gs_ct[tid]        = asfloat(ShaderLabScratchLoad(SHADERLAB_PARTIAL_WORD(tid, 0)));
         gs_cp[tid]        = asfloat(ShaderLabScratchLoad(SHADERLAB_PARTIAL_WORD(tid, 1)));
@@ -4000,8 +4008,8 @@ void main(uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID)
 )HLSL";
             ShaderLabEffectDescriptor desc;
             desc.name = L"Chromaticity Statistics";
-            desc.effectId = L"Chromaticity Statistics"; desc.effectVersion = 2;
-            desc.dispatchShape = Graph::DispatchShape::ReduceGroups;
+            desc.effectId = L"Chromaticity Statistics"; desc.effectVersion = 3;
+            desc.dispatchShape = Graph::DispatchShape::ReduceCells;
             desc.category = L"Analysis";
             desc.subcategory = L"Statistics";
             desc.shaderType = Graph::CustomShaderType::D3D11ComputeShader;

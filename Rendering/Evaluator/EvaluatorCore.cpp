@@ -57,13 +57,23 @@ namespace ShaderLab::Rendering::Evaluator
         return Performance::DefaultEvaluatorOptions();
     }
 
-    void EvaluatorCore::ApplyFrameOptions(const EvaluatorOptions& previous)
+    void EvaluatorCore::ApplyFrameOptions(const EvaluatorOptions& previous, GraphModel& graph)
     {
-        if (previous.subRectInputDemand == m_frameOptions.subRectInputDemand)
+        const bool demandChanged = previous.subRectInputDemand != m_frameOptions.subRectInputDemand;
+        const bool filterChanged = previous.pointImageFilter != m_frameOptions.pointImageFilter;
+        if (!demandChanged && !filterChanged)
             return;
         for (auto& [nodeId, runtime] : m_nodes)
-            if (runtime.instance.pixelImpl)
-                runtime.instance.pixelImpl->SetSubRectInputDemand(m_frameOptions.subRectInputDemand);
+        {
+            auto* pixelImpl = runtime.instance.pixelImpl;
+            if (!pixelImpl) continue;
+            pixelImpl->SetSubRectInputDemand(m_frameOptions.subRectInputDemand);
+            pixelImpl->SetPointImageFilter(m_frameOptions.pointImageFilter);
+            // The filter changes what the node renders: its visit reapplies
+            // it (ForceLoadShader) and drops the cached output.
+            if (filterChanged)
+                if (auto* node = graph.FindNode(nodeId)) node->MarkDirty();
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -100,10 +110,31 @@ namespace ShaderLab::Rendering::Evaluator
         return srv;
     }
 
-    HRESULT EvaluatorCore::WriteAnalysis(uint32_t nodeId, uint32_t firstElement, const float* float4s, uint32_t elementCount)
+    HRESULT EvaluatorCore::WriteAnalysis(const GraphModel* graph, uint32_t nodeId, uint32_t firstElement,
+                                         const float* float4s, uint32_t elementCount)
     {
         auto* bridge = BridgeFor(nodeId);
-        return bridge ? bridge->WriteResults(firstElement, float4s, elementCount) : E_NOT_VALID_STATE;
+        if (!bridge) return E_NOT_VALID_STATE;
+        auto* runtime = FindRuntime(nodeId);
+        const auto* node = graph ? graph->FindNode(nodeId) : nullptr;
+        if (DeferredCommitOn() && runtime && runtime->deferred.dispatches > 0 && node && node->customEffect.has_value())
+            return WriteDeferredResults(*graph, *node, *runtime, bridge, firstElement, float4s, elementCount);
+        return bridge->WriteResults(firstElement, float4s, elementCount);
+    }
+
+    void EvaluatorCore::FailNextTextureCopyForTest(uint32_t nodeId)
+    {
+        if (auto* bridge = BridgeFor(nodeId)) bridge->FailNextTextureCopyForTest();
+    }
+
+    void EvaluatorCore::FailNextReadbackPollForTest(uint32_t nodeId)
+    {
+        if (auto* bridge = BridgeFor(nodeId)) bridge->FailNextPollForTest();
+    }
+
+    void EvaluatorCore::FailNextComputeSubmitForTest(uint32_t nodeId)
+    {
+        if (auto* bridge = BridgeFor(nodeId)) bridge->FailNextSubmitForTest();
     }
 
     uint32_t EvaluatorCore::AppliedGpuBits(uint32_t nodeId) const
@@ -138,10 +169,82 @@ namespace ShaderLab::Rendering::Evaluator
         }
     }
 
-    void EvaluatorCore::MarkOutputChanged(uint32_t nodeId)
+    void EvaluatorCore::MarkOutputChanged(uint32_t nodeId, const DirtyRegion& region)
     {
-        if (m_pass.outputChanged.insert(nodeId).second)
-            ++m_nodes[nodeId].outputChangeCount;
+        auto& runtime = m_nodes[nodeId];
+        auto [it, inserted] = m_pass.outputChanged.try_emplace(nodeId, region);
+        if (!inserted) it->second.Union(region);
+        if (m_pass.counted.insert(nodeId).second) ++runtime.outputChangeCount;
+        runtime.pendingRegion.Union(region);
+        if (!runtime.preRenderTargets.empty())
+        {
+            const DirtyRegion pixels = region.WithMovesCollapsed();
+            for (auto& [pin, target] : runtime.preRenderTargets)
+                target.pending.Union(pixels);
+        }
+    }
+
+    void EvaluatorCore::MarkComputeChanged(const EffectNode& node)
+    {
+        if (!node.outputPins.empty() || !m_frameOptions.analysisChangeGate)
+        {
+            MarkOutputChanged(node.id);
+            return;
+        }
+        auto& runtime = m_nodes[node.id];
+        if (m_pass.counted.insert(node.id).second) ++runtime.outputChangeCount;
+        runtime.pendingRegion = DirtyRegion::Whole();
+    }
+
+    DirtyRegion EvaluatorCore::DispatchInputRegion(uint32_t nodeId) const
+    {
+        const auto* runtime = FindRuntime(nodeId);
+        return runtime ? runtime->lastDispatchInput : DirtyRegion{};
+    }
+
+    DirtyRegion EvaluatorCore::PreRenderPending(uint32_t producerId, uint32_t outputPin) const
+    {
+        const auto* runtime = FindRuntime(producerId);
+        if (!runtime) return DirtyRegion::Whole();
+        const auto target = runtime->preRenderTargets.find(outputPin);
+        return target == runtime->preRenderTargets.end() || !target->second.bitmap ? DirtyRegion::Whole()
+                                                                                   : target->second.pending;
+    }
+
+    NodeReduceCellStats EvaluatorCore::ReduceCells(uint32_t nodeId) const
+    {
+        NodeReduceCellStats stats;
+        if (const auto* runtime = FindRuntime(nodeId))
+        {
+            stats.totals = { runtime->cellDispatches, runtime->cellIncremental, runtime->cellsDispatched,
+                             runtime->cellsTotal };
+            stats.lastMask = runtime->lastCellMask;
+            stats.lastRectsGiven = runtime->lastCellRectsGiven;
+        }
+        return stats;
+    }
+
+    FallbackBuildsInUse EvaluatorCore::FallbacksInUse(const GraphModel& graph) const
+    {
+        FallbackBuildsInUse count;
+        for (const auto& node : graph.Nodes())
+        {
+            const auto* runtime = node.needed ? FindRuntime(node.id) : nullptr;
+            if (!runtime || !runtime->variant.fallbackInUse) continue;
+            ++(runtime->variant.fallbackPending ? count.pending : count.missing);
+        }
+        return count;
+    }
+
+    DirtyRegion EvaluatorCore::PendingRegion(uint32_t nodeId) const
+    {
+        const auto* runtime = FindRuntime(nodeId);
+        return runtime ? runtime->pendingRegion : DirtyRegion::Whole();
+    }
+
+    void EvaluatorCore::AcknowledgeRegion(uint32_t nodeId)
+    {
+        m_nodes[nodeId].pendingRegion = {};
     }
 
     bool EvaluatorCore::BoundSourceChanged(const EffectNode& node) const
@@ -188,6 +291,8 @@ namespace ShaderLab::Rendering::Evaluator
 
         // Effects created on the previous pass are now fully initialized.
         m_pass = {};
+        // The graph may have been edited since the last pass.
+        m_policyCache.clear();
 
         // A frame's options are fixed by its Normal pass; a Frozen sweep reuses them.
         if (!frozen)
@@ -195,7 +300,7 @@ namespace ShaderLab::Rendering::Evaluator
             const EvaluatorOptions previous = m_frameOptions;
             m_frameOptions = Options();
             m_variants.SetCompilePrebuilt(m_frameOptions.compilePrebuiltEffects);
-            ApplyFrameOptions(previous);
+            ApplyFrameOptions(previous, graph);
             // Re-dirty nodes whose wanted variant finished compiling.
             PollVariantsAndPrune(graph);
         }
@@ -223,8 +328,14 @@ namespace ShaderLab::Rendering::Evaluator
 
         // Async readbacks that landed since the last pass mark their bound
         // consumers dirty, so this runs before the walk.
+        if (!frozen && !std::exchange(m_frameOpen, true))
+            ++m_frame;
         if (!frozen && HasPendingReadbacks())
             PollAsyncReadbacks(graph);
+        // Host commits (CommitFields) after the landings, so the host's value
+        // is the one that stands.
+        if (!frozen)
+            ApplyHostCommits(graph);
 
         // Dirty propagation is PULL-based, done at each node's visit. A push
         // along edges up front misses property bindings (a Clock has no
@@ -240,30 +351,41 @@ namespace ShaderLab::Rendering::Evaluator
             if (!node)
                 continue;
 
-            // Did anything this node reads change earlier in the pass?
-            if (!node->dirty)
+            // Did anything this node reads change earlier in the pass? Each
+            // input's region maps into this node's output (MapRegion).
+            for (const auto* edge : graph.GetInputEdges(nodeId))
             {
-                for (const auto* edge : graph.GetInputEdges(nodeId))
-                {
-                    if (m_pass.outputChanged.count(edge->sourceNodeId))
-                    { node->dirty = true; break; }
-                }
+                const auto changed = m_pass.outputChanged.find(edge->sourceNodeId);
+                if (changed == m_pass.outputChanged.end()) continue;
+                const EffectNode* source = graph.FindNode(edge->sourceNodeId);
+                node->MarkDirty(m_frameOptions.dirtyRegions && source
+                                    ? MapRegion(*source, *node, *edge, changed->second)
+                                    : DirtyRegion::Whole());
             }
-            if (!node->dirty && BoundSourceChanged(*node))
+            if (BoundSourceChanged(*node))
             {
                 // A video's bound properties drive its provider, which marks
                 // the node dirty itself when a new frame is uploaded. Until
-                // then only its analysis fields move.
-                if (IsVideoSource(*node))
+                // then only its analysis fields move. Anything else reads the
+                // bound value at every pixel.
+                if (!IsVideoSource(*node))
+                    node->MarkDirty();
+                else if (!node->IsDirty())
                     m_pass.fieldsChanged.insert(nodeId);
-                else
-                    node->dirty = true;
             }
 
             // Record BEFORE the visit for the start-of-frame case; the binding
             // sites add themselves when they discover a change mid-visit.
-            if (node->dirty)
-                MarkOutputChanged(nodeId);
+            // A compute node's region is what its inputs changed in, not its
+            // output: that changes whole, or for an analysis-only node is
+            // published by its dispatch.
+            if (node->IsDirty())
+            {
+                if (IsD3D11Compute(*node))
+                    MarkComputeChanged(*node);
+                else
+                    MarkOutputChanged(nodeId, m_frameOptions.dirtyRegions ? node->Region() : DirtyRegion::Whole());
+            }
 
             // A node waits on its baseline only while it has none and is rendered.
             if (node->compilePending &&
@@ -276,6 +398,27 @@ namespace ShaderLab::Rendering::Evaluator
             // change does not keep the host rendering.
             if (!node->needed)
                 continue;
+
+            // Two bindings of one field must agree on its commit policy, or
+            // neither consumer resolves, whatever kind of node it is.
+            if (std::wstring conflict = CommitPolicyConflict(*node, graph); !conflict.empty())
+            {
+                node->runtimeError = std::wstring(cCommitPolicyConflictPrefix) + conflict;
+                // A source's image comes from its provider, not its bindings.
+                if (node->type != NodeType::Source) DropOutput(*node);
+                node->ClearDirty();
+                continue;
+            }
+            if (node->runtimeError.starts_with(cCommitPolicyConflictPrefix))
+            {
+                // Resolved since: it renders again, with what it binds now.
+                node->runtimeError.clear();
+                node->MarkDirty();
+                if (IsD3D11Compute(*node))
+                    MarkComputeChanged(*node);
+                else
+                    MarkOutputChanged(nodeId);
+            }
 
             switch (node->type)
             {
@@ -304,7 +447,7 @@ namespace ShaderLab::Rendering::Evaluator
         // D2D needs one full render cycle to initialize a new effect's
         // transform pipeline before its output is valid.
         for (uint32_t id : m_pass.justCreated)
-            if (auto* node = graph.FindNode(id)) node->dirty = true;
+            if (auto* node = graph.FindNode(id)) node->MarkDirty();
 
         return finalOutput;
     }
@@ -324,12 +467,12 @@ namespace ShaderLab::Rendering::Evaluator
                 }
                 else
                 {
-                    node.dirty = true;
+                    node.MarkDirty();
                     MarkOutputChanged(node.id);
                 }
             }
         }
-        node.dirty = false;
+        node.ClearDirty();
     }
 
     void EvaluatorCore::VisitBuiltIn(GraphModel& graph, EffectNode& node, ID2D1DeviceContext5* dc)
@@ -342,7 +485,7 @@ namespace ShaderLab::Rendering::Evaluator
         // plus the frozen post-dispatch pass.
         if (!effect)
         {
-            node.dirty = false;
+            node.ClearDirty();
             // An existing error (a bad effectClsid at load) names the cause better.
             if (node.runtimeError.empty())
                 node.runtimeError = std::wstring(cCreateEffectFailedPrefix) + createError;
@@ -355,19 +498,19 @@ namespace ShaderLab::Rendering::Evaluator
 
         PropertyMap effectiveProps;
         const bool bindingsChanged = ResolveAndWriteBackBindings(node, graph, effectiveProps);
-        const bool wasDirty = node.dirty || bindingsChanged;
+        const bool wasDirty = node.IsDirty() || bindingsChanged;
         // A binding that moved changes this node's output, so downstream
         // consumers have to learn about it too.
         if (bindingsChanged) MarkOutputChanged(node.id);
         if (wasDirty)
         {
             ApplyProperties(effect, effectiveProps);
-            node.dirty = false;
+            node.ClearDirty();
         }
 
-        // Upstream in-place texture updates arrive as node.dirty via the
+        // Upstream in-place texture updates arrive as a dirty node via the
         // dirty walks; D2D itself cannot see them.
-        UpdateEffectCachePolicy(effect, m_nodes[node.id], wasDirty);
+        UpdateEffectCachePolicy(effect, m_nodes[node.id], wasDirty || !CachesOutput(node.id));
         PublishOutput(node, effect);
 
         // An analysis effect (Histogram) computes when its output is drawn,
@@ -387,7 +530,7 @@ namespace ShaderLab::Rendering::Evaluator
         node.analysisOutput.type = AnalysisOutputType::Typed;
         node.analysisOutput.fields = ParameterNodeFields(node);
         node.cachedOutput = nullptr;
-        node.dirty = false;
+        node.ClearDirty();
     }
 
     ID2D1Image* EvaluatorCore::VisitOutput(GraphModel& graph, EffectNode& node)
@@ -401,7 +544,7 @@ namespace ShaderLab::Rendering::Evaluator
             if (srcNode && srcNode->cachedOutput)
                 node.cachedOutput = srcNode->cachedOutput;
         }
-        node.dirty = false;
+        node.ClearDirty();
         return node.cachedOutput;
     }
 
@@ -415,7 +558,7 @@ namespace ShaderLab::Rendering::Evaluator
             if (!ResolveAndWriteBackBindings(node, graph, effectiveProps)) continue;
             // A video's image changes only when TickAndUploadVideos uploads a frame.
             if (!IsVideoSource(node))
-                node.dirty = true;
+                node.MarkDirty();
         }
     }
 }

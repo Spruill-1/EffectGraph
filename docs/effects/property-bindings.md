@@ -44,6 +44,10 @@ graph LR
 - **One traversal**: `PropertyBinding::ForEachSourceNode` / `AnySourceNode` / `ReadsFrom` and `ForEachBindingSource` / `AnyBindingSource` (`Graph/EffectNode.h`) visit the nodes a binding reads, whole-array or per-component, for the sort, dirty propagation, removal and the canvas
 - **Removing one source**: `GraphModel::UnbindPropertySource` drops the components that read a given source field and the whole binding when none is left (Alt+click on a data edge)
 
+## Commit policies (deferred analysis commit)
+
+A binding from an analysis field carries a commit policy, saved as `"commitPolicy"` on the binding (`"exact"`, the default and omitted on save, `"immediate"`, `"threshold"`, `"hosted"`). It matters only in a context with deferred analysis commit (EffectGraph 1.1, `EvaluatorOptions::deferredAnalysisCommit`); anywhere else every binding behaves as `"immediate"`. `"threshold"` uses the field's `changeThreshold` (`AnalysisFieldDescriptor::changeThreshold`, saved on a custom effect's analysis field as `"changeThreshold"`; 0 means any change). Two bindings of one field with different policies fail every consumer of the field, of any node kind, with an error starting `Commit policy conflict: ` (decision #255); an unknown tag loads as `"exact"` with a load error on the node. The semantics are in [EffectGraph API: deferred analysis commit](../architecture/effectgraph-api.md#deferred-analysis-commit) (decision #250).
+
 
 ---
 

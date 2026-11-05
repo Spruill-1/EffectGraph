@@ -343,6 +343,12 @@ namespace
              defineValue("SHADERLAB_REDUCE_SCRATCH_UINTS") == ShaderLab::Effects::kReduceScratchUints);
         TEST("Perf_ReduceClearedMatchHlsl",
              defineValue("SHADERLAB_REDUCE_CLEARED") == ShaderLab::Effects::kReduceScratchClearedUints);
+        TEST("Perf_ReduceCellGridMatchesHlsl",
+             defineValue("SHADERLAB_REDUCE_CELL_COLUMNS") == ShaderLab::Effects::kReduceCellColumns &&
+             defineValue("SHADERLAB_REDUCE_CELL_ROWS") == ShaderLab::Effects::kReduceCellRows);
+        TEST("Perf_ReduceCellsConstantsSlotMatchesHlsl",
+             lib.find("cbuffer _SLReduceCells : register(b" + std::to_string(ShaderLab::Effects::cReduceCellsConstantsSlot) +
+                      ")") != std::string::npos);
     }
 
     // Multi-group statistics count every pixel exactly once, including an
@@ -450,8 +456,8 @@ namespace
         g.Connect(a, 0, sa, 0);
         g.Connect(b, 0, sb, 0);
         g.Connect(a, 0, tm, 0);
-        auto clean = [&] { for (auto& n : g.MutableNodes()) n.dirty = false; };
-        auto dirty = [&](uint32_t id) { return g.FindNode(id)->dirty; };
+        auto clean = [&] { for (auto& n : g.MutableNodes()) n.ClearDirty(); };
+        auto dirty = [&](uint32_t id) { return g.FindNode(id)->IsDirty(); };
 
         clean();
         g.BindProperty(tm, L"Gain", sa, L"Max", 0);

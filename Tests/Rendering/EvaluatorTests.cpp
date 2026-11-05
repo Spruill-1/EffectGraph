@@ -184,16 +184,16 @@ namespace ShaderLab::Tests
             };
 
             auto profile = ShaderLab::Rendering::PresetBT2020_1000();
-            graph.FindNode(id)->dirty = false;
+            graph.FindNode(id)->ClearDirty();
             TEST("WorkingSpace_ChangeReported", ShaderLab::Rendering::UpdateWorkingSpaceNodes(graph, profile));
             TEST("WorkingSpace_PeakCopied", readFloat(L"PeakNits") == profile.caps.maxLuminanceNits);
             TEST("WorkingSpace_SimulatedFromProfile", readFloat(L"IsSimulated") == 1.0f);
-            TEST("WorkingSpace_ChangedNodeDirty", graph.FindNode(id)->dirty);
+            TEST("WorkingSpace_ChangedNodeDirty", graph.FindNode(id)->IsDirty());
 
-            graph.FindNode(id)->dirty = false;
+            graph.FindNode(id)->ClearDirty();
             profile.caps.maxLuminanceNits += 0.5f;
             TEST("WorkingSpace_DeadBandHoldsStable", !ShaderLab::Rendering::UpdateWorkingSpaceNodes(graph, profile)
-                 && !graph.FindNode(id)->dirty);
+                 && !graph.FindNode(id)->IsDirty());
         }
     }
 

@@ -272,9 +272,9 @@ namespace
         { L"ICtCp Highlight Desaturation", 5, 0x0E64ED204F5922F8ull },
         { L"Split Comparison", 9, 0x50791FF1F3B0C38Aull },
         { L"Side by Side", 2, 0xB38BF5EBBC6D6899ull },
-        { L"Channel Statistics", 2, 0x09A4ED7F8CE41F66ull },
-        { L"Luminance Statistics", 6, 0x4844A8551BC50130ull },
-        { L"Chromaticity Statistics", 2, 0xB07D81B2A945B2B0ull },
+        { L"Channel Statistics", 3, 0xF3448A2FB7BA61CFull },
+        { L"Luminance Statistics", 7, 0xBD2214AEB73C4413ull },
+        { L"Chromaticity Statistics", 3, 0x6B7EE49344F44ED0ull },
         { L"Float Parameter", 1, 0x0A98841B5C185B75ull },
         { L"Integer Parameter", 1, 0xF5FA6BDA7A0873D8ull },
         { L"Toggle Parameter", 1, 0x736789167FAB1588ull },
@@ -1238,49 +1238,56 @@ namespace
         // the node's own GPU time.
         if (!g_useWarp)
         {
-            constexpr int cRuns = 7;
+            constexpr int cRuns = 21;
             constexpr double cMaxReduceToCopyRatio = 4.0;
             ShaderLab::Rendering::GpuTimer timer;
             timer.Initialize(g_d3dDevice.get());
             timer.SetEnabled(true);
-            auto medianNodeMs = [&](bool reduce)
+            // Both nodes in one graph, so every frame times the reduction and
+            // the copy in the same GPU clock state (the profiling timer
+            // materializes each node on its own).
+            CaseEvaluator().ReleaseCache();
+            ShaderLab::Graph::GraphModel costGraph;
+            ShaderLab::Effects::SourceNodeFactory costFactory;
+            const uint32_t large = AddPatternSource(costGraph, costFactory, patternA, 3840, 2160);
+            const uint32_t tile = AddPatternSource(costGraph, costFactory, patternB, 1024, 1024);
+            const uint32_t reduceNode = costGraph.AddNode(ShaderLabEffects::CreateNode(*descriptor));
+            costGraph.Connect(tile, 0, reduceNode, 0);
+            costGraph.Connect(large, 0, reduceNode, 1);
+            const uint32_t copyNode = costGraph.AddNode(ShaderLabEffects::CreateNode(*descriptor));
+            costGraph.Connect(large, 0, copyNode, 0);
+            CaseEvaluator().SetGpuTimer(&timer);
+            std::vector<double> reduceSamples, copySamples;
+            for (int run = 0; run < cRuns + 2; ++run)
             {
-                CaseEvaluator().ReleaseCache();
-                ShaderLab::Graph::GraphModel costGraph;
-                ShaderLab::Effects::SourceNodeFactory costFactory;
-                const uint32_t large = AddPatternSource(costGraph, costFactory, patternA, 3840, 2160);
-                const uint32_t node = costGraph.AddNode(ShaderLabEffects::CreateNode(*descriptor));
-                if (reduce)
+                costGraph.MarkAllDirty();
+                timer.BeginFrame();
+                RunFrame(costGraph);
+                timer.EndFrame();
+                if (timer.CollectBlocking() && run >= 2 && timer.NodeMs(reduceNode) > 0.0 && timer.NodeMs(copyNode) > 0.0)
                 {
-                    const uint32_t tile = AddPatternSource(costGraph, costFactory, patternB, 1024, 1024);
-                    costGraph.Connect(tile, 0, node, 0);
-                    costGraph.Connect(large, 0, node, 1);
+                    reduceSamples.push_back(timer.NodeMs(reduceNode));
+                    copySamples.push_back(timer.NodeMs(copyNode));
                 }
-                else
-                {
-                    costGraph.Connect(large, 0, node, 0);
-                }
-                CaseEvaluator().SetGpuTimer(&timer);
-                std::vector<double> samples;
-                for (int run = 0; run < cRuns + 2; ++run)
-                {
-                    costGraph.MarkAllDirty();
-                    timer.BeginFrame();
-                    RunFrame(costGraph);
-                    timer.EndFrame();
-                    if (timer.CollectBlocking() && run >= 2 && timer.NodeMs(node) > 0.0)
-                        samples.push_back(timer.NodeMs(node));
-                }
-                CaseEvaluator().SetGpuTimer(nullptr);
-                std::sort(samples.begin(), samples.end());
-                return samples.empty() ? -1.0 : samples[samples.size() / 2];
+            }
+            CaseEvaluator().SetGpuTimer(nullptr);
+            const auto median = [](std::vector<double> v)
+            {
+                std::sort(v.begin(), v.end());
+                return v.empty() ? -1.0 : v[v.size() / 2];
             };
-            const double reduceMs = medianNodeMs(true);
-            const double copyMs = medianNodeMs(false);
-            printf("  [info] node GPU time: 4K reduced into a 1024 tile %.2f ms, 4K copied 1:1 %.2f ms\n", reduceMs, copyMs);
+            const double reduceMs = median(reduceSamples);
+            const double copyMs = median(copySamples);
+            std::vector<double> ratios;
+            for (size_t i = 0; i < reduceSamples.size(); ++i) ratios.push_back(reduceSamples[i] / copySamples[i]);
+            std::sort(ratios.begin(), ratios.end());
+            printf("  [info] node GPU time, %zu frames: 4K reduced into a 1024 tile %.2f ms, 4K copied 1:1 %.2f ms; "
+                   "per-frame ratio median %.2f, range %.2f to %.2f\n", reduceSamples.size(), reduceMs, copyMs,
+                   median(ratios), ratios.empty() ? 0.0 : ratios.front(), ratios.empty() ? 0.0 : ratios.back());
+            const auto paired = ComparePaired(reduceSamples, copySamples, cMaxReduceToCopyRatio);
+            PrintPairedTiming("SideBySide reduce - 4 x copy", paired);
             TEST("SideBySide_CostMeasured", reduceMs > 0.0 && copyMs > 0.0);
-            TIMING_TEST("SideBySide_ReduceCostNearCopy", reduceMs > 0.0 && copyMs > 0.0 &&
-                                                                           reduceMs < cMaxReduceToCopyRatio * copyMs);
+            TIMING_TEST("SideBySide_ReduceCostNearCopy", reduceMs > 0.0 && copyMs > 0.0 && !paired.ConfidentlyAbove());
         }
         CaseEvaluator().ReleaseCache();
     }

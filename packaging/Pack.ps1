@@ -18,11 +18,17 @@
 .PARAMETER SkipBuild
     Pack what is already built (Release, both platforms, and the engine's
     package builds).
+
+.PARAMETER V1Version
+    The published 1.0.x EffectGraph.Native that the smoke test also runs over
+    with --expect-v1: the new bindings on an old DLL, where every v2
+    interface must answer E_NOINTERFACE. Restored from nuget.org.
 #>
 param(
     [string]$Version,
     [string]$PlatformToolset,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$V1Version = '1.0.2'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
@@ -139,5 +145,24 @@ foreach ($run in $runs) {
     Write-Host "C# smoke test $(if ($run) { $run[1] } else { 'portable' })"
     & dotnet run --project $smoke -c Release @run "-p:RestorePackagesPath=$packages" "-p:EffectGraphVersion=$Version" --nologo
     if ($LASTEXITCODE -ne 0) { throw "C# smoke test failed: $run" }
+}
+# ---- The same test, per runtime, over the last 1.0 DLL: the runtime builds
+# above put EffectGraph.dll beside the program, so it is swapped for the old one.
+$v1 = Join-Path $PSScriptRoot 'obj\v1'
+& nuget install EffectGraph.Native -Version $V1Version -OutputDirectory $v1 -Source https://api.nuget.org/v3/index.json -NonInteractive
+if ($LASTEXITCODE -ne 0) { throw "nuget install EffectGraph.Native $V1Version failed" }
+$smokeBin = Join-Path $bindings 'EffectGraph.Smoke\bin\Release\net8.0-windows'
+foreach ($run in $runs | Where-Object { $_ }) {
+    $rid = $run[1]
+    $dir = Join-Path $v1 "smoke-$rid"
+    if (Test-Path $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+    Copy-Item (Join-Path $smokeBin $rid) $dir -Recurse
+    Copy-Item (Join-Path $v1 "EffectGraph.Native.$V1Version\runtimes\$rid\native\EffectGraph.dll") $dir -Force
+    # The old DLL refuses this version's blobs (another shader contract), so
+    # the test registers the old package's own.
+    Copy-Item (Join-Path $v1 "EffectGraph.Native.$V1Version\effects\luminance_statistics.effectblob") $dir -Force
+    Write-Host "C# smoke test $rid over EffectGraph.dll $V1Version"
+    & (Join-Path $dir 'EffectGraph.Smoke.exe') --expect-v1
+    if ($LASTEXITCODE -ne 0) { throw "C# smoke test over $V1Version failed: $rid" }
 }
 Get-ChildItem $out -Filter "EffectGraph*.$Version.nupkg" | ForEach-Object { Write-Host "packed $($_.Name) ($([int]($_.Length / 1KB)) KB)" }

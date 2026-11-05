@@ -14,7 +14,7 @@ namespace ShaderLab::Graph
     void SetNodeProperty(EffectNode& node, const std::wstring& key, PropertyValue value)
     {
         node.properties[key] = std::move(value);
-        node.dirty = true;
+        node.MarkDirty();
     }
 
     bool SetNodeProperty(GraphModel& graph, uint32_t nodeId, const std::wstring& key, PropertyValue value)
@@ -28,7 +28,7 @@ namespace ShaderLab::Graph
     void SetNodeMedia(EffectNode& node, std::wstring path)
     {
         node.mediaPath = std::move(path);
-        node.dirty = true;
+        node.MarkDirty();
     }
 
     bool SetNodeMedia(GraphModel& graph, uint32_t nodeId, std::wstring path)
@@ -67,7 +67,7 @@ namespace ShaderLab::Graph
 
     void MarkNodeChanged(EffectNode& node)
     {
-        node.dirty = true;
+        node.MarkDirty();
     }
 
     bool MarkNodeChanged(GraphModel& graph, uint32_t nodeId)
@@ -78,12 +78,25 @@ namespace ShaderLab::Graph
         return true;
     }
 
+    void MarkNodeChanged(EffectNode& node, const DirtyRegion& region)
+    {
+        node.MarkDirty(region);
+    }
+
+    bool MarkNodeChanged(GraphModel& graph, uint32_t nodeId, const DirtyRegion& region)
+    {
+        auto* node = graph.FindNode(nodeId);
+        if (!node) return false;
+        MarkNodeChanged(*node, region);
+        return true;
+    }
+
     bool RetryNode(GraphModel& graph, uint32_t nodeId)
     {
         auto* node = graph.FindNode(nodeId);
         if (!node) return false;
         node->runtimeError.clear();
-        node->dirty = true;
+        node->MarkDirty();
         return true;
     }
 
@@ -92,7 +105,7 @@ namespace ShaderLab::Graph
         auto* node = graph.FindNode(nodeId);
         if (!node) return false;
         node->cachedOutput = nullptr;
-        node->dirty = true;
+        node->MarkDirty();
         return true;
     }
 
@@ -102,7 +115,7 @@ namespace ShaderLab::Graph
         if (!node) return false;
         node->customEffect = std::move(definition);
         node->cachedOutput = nullptr;
-        node->dirty = true;
+        node->MarkDirty();
         return true;
     }
 
@@ -115,7 +128,25 @@ namespace ShaderLab::Graph
         auto& sources = it->second.sources;
         if (!sources.empty() && sources[0].has_value())
             sources[0]->sourceComponent = component;
-        node->dirty = true;
+        node->MarkDirty();
+        return true;
+    }
+
+    bool SetBindingCommitPolicy(GraphModel& graph, uint32_t nodeId, const std::wstring& key, CommitPolicy policy)
+    {
+        auto* node = graph.FindNode(nodeId);
+        if (!node) return false;
+        auto it = node->propertyBindings.find(key);
+        if (it == node->propertyBindings.end()) return false;
+        if (it->second.commitPolicy == policy) return true;
+        it->second.commitPolicy = policy;
+        node->MarkDirty();
+        // The producers dispatch whole, so their committed records are judged
+        // again under the new policy.
+        it->second.ForEachSourceNode([&](uint32_t sourceId)
+        {
+            if (auto* source = graph.FindNode(sourceId)) source->MarkDirty();
+        });
         return true;
     }
 
@@ -148,14 +179,14 @@ namespace ShaderLab::Graph
         auto it = node->properties.find(key);
         if (it == node->properties.end()) return false;
         if (!edit(it->second)) return false;
-        node->dirty = true;
+        node->MarkDirty();
         return true;
     }
 
     EffectNode CloneNodeForPaste(const EffectNode& node)
     {
         EffectNode copy = node;
-        copy.dirty = true;
+        copy.MarkDirty();
         copy.cachedOutput = nullptr;
         copy.runtimeError.clear();
         if (copy.customEffect.has_value())
@@ -256,7 +287,7 @@ namespace ShaderLab::Graph
         param.step = 0.1f;
         node->customEffect->parameters.push_back(std::move(param));
         node->properties[name] = 0.0f;
-        node->dirty = true;
+        node->MarkDirty();
         return name;
     }
 
@@ -270,7 +301,7 @@ namespace ShaderLab::Graph
             [&name](const ParameterDefinition& p) { return p.name == name; });
         node->properties.erase(name);
         graph.UnbindProperty(nodeId, name);
-        node->dirty = true;
+        node->MarkDirty();
         return true;
     }
 }

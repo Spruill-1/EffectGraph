@@ -164,6 +164,59 @@ float ShaderLabAnalysisField(Texture2D<float4> tex, uint index)
         GroupMemoryBarrierWithGroupSync(); \
         return isLastGroup; \
     }
+// ---- Cell reductions -----------------------------------------------------------
+// SHADERLAB_REDUCE_CELLS (instead of SHADERLAB_REDUCE_SCRATCH) splits input 0
+// into a SHADERLAB_REDUCE_CELL_COLUMNS x SHADERLAB_REDUCE_CELL_ROWS grid. Each
+// cell has its own partial slot above the cleared head, and the runner
+// dispatches one group per cell it recomputes: every cell for a whole
+// dispatch, only the cells a dirty region touches otherwise. The others keep
+// their partials from earlier dispatches, which is exact because a cell
+// recomputed from unchanged pixels writes the same bits, and the last group
+// folds every slot in the same order either way. Pattern, per group:
+//   uint cell = ShaderLabReduceCell(Gid.x);
+//   uint4 r = ShaderLabCellRect(cell, Width, Height);   // x0, y0, x1, y1 (exclusive)
+//   reduce the cell's pixels in a fixed order, store the partial in slot `cell`,
+//   if (!ShaderLabReduceIsLastGroup(tid)) return;
+//   fold slots [0, SlotCount).
+// The runner fills _SLReduceCells at b2: DispatchedGroups, SlotCount (the
+// grid's cell count) and CellOf (the cell of group g, four per uint4).
+#define SHADERLAB_REDUCE_CELL_COLUMNS 8
+#define SHADERLAB_REDUCE_CELL_ROWS    8
+#define SHADERLAB_REDUCE_CELLS \
+    globallycoherent RWByteAddressBuffer _SLScratch : register(u2); \
+    cbuffer _SLReduceCells : register(b2) \
+    { \
+        uint DispatchedGroups; \
+        uint SlotCount; \
+        uint4 CellOf[16]; \
+    }; \
+    groupshared uint _SLIsLastGroup; \
+    bool ShaderLabReduceIsLastGroup(uint tid) \
+    { \
+        DeviceMemoryBarrierWithGroupSync(); \
+        if (tid == 0) \
+        { \
+            uint prev; \
+            _SLScratch.InterlockedAdd(0, 1u, prev); \
+            _SLIsLastGroup = (prev == DispatchedGroups - 1) ? 1u : 0u; \
+        } \
+        GroupMemoryBarrierWithGroupSync(); \
+        return _SLIsLastGroup != 0; \
+    } \
+    uint ShaderLabReduceCell(uint group) \
+    { \
+        uint4 four = CellOf[group >> 2]; \
+        uint lane = group & 3u; \
+        return lane == 0u ? four.x : (lane == 1u ? four.y : (lane == 2u ? four.z : four.w)); \
+    } \
+    uint4 ShaderLabCellRect(uint cell, uint width, uint height) \
+    { \
+        uint cx = cell % SHADERLAB_REDUCE_CELL_COLUMNS; \
+        uint cy = cell / SHADERLAB_REDUCE_CELL_COLUMNS; \
+        return uint4(cx * width / SHADERLAB_REDUCE_CELL_COLUMNS, cy * height / SHADERLAB_REDUCE_CELL_ROWS, \
+                     (cx + 1u) * width / SHADERLAB_REDUCE_CELL_COLUMNS, (cy + 1u) * height / SHADERLAB_REDUCE_CELL_ROWS); \
+    }
+
 #define ShaderLabScratchStore(word, value)  _SLScratch.Store((word) * 4, (value))
 #define ShaderLabScratchLoad(word)          _SLScratch.Load((word) * 4)
 
@@ -206,6 +259,18 @@ float ShaderLabAnalysisField(Texture2D<float4> tex, uint index)
             uint _slMerged = 0; \
             for (uint _slGroup = 0; _slGroup < SHADERLAB_REDUCE_GROUPS; ++_slGroup) \
                 _slMerged += ShaderLabScratchLoad(SHADERLAB_HISTOGRAM_WORD(_slGroup, _slMergeBin, bins)); \
+            hist[_slMergeBin] = _slMerged; \
+        } \
+    }
+
+// The same over `slots` partial slots (a cell reduction's SlotCount).
+#define ShaderLabMergeHistogramSlots(hist, bins, tid, threads, slots) \
+    { \
+        for (uint _slMergeBin = (tid); _slMergeBin < (bins); _slMergeBin += (threads)) \
+        { \
+            uint _slMerged = 0; \
+            for (uint _slSlot = 0; _slSlot < (slots); ++_slSlot) \
+                _slMerged += ShaderLabScratchLoad(SHADERLAB_HISTOGRAM_WORD(_slSlot, _slMergeBin, bins)); \
             hist[_slMergeBin] = _slMerged; \
         } \
     }

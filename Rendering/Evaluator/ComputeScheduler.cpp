@@ -37,8 +37,10 @@ namespace ShaderLab::Rendering::Evaluator
             PropertyMap effectiveProps;
             if (ResolveAndWriteBackBindings(node, graph, effectiveProps))
             {
-                node.dirty = true;
-                MarkOutputChanged(node.id);
+                // A parameter of its own moved: every pixel reads it.
+                node.MarkDirty();
+                m_nodes[node.id].ownStateChanged = true;
+                MarkComputeChanged(node);
             }
         }
 
@@ -109,7 +111,35 @@ namespace ShaderLab::Rendering::Evaluator
         // unless its results are on the GPU only.
         const NodeRuntime* runtime = FindRuntime(node.id);
         const bool gpuOnlyResults = runtime && runtime->cpuFieldsStale;
-        const bool needsCompute = node.dirty ||
+        // Deferred commit: a lane-3 binding new on a clean producer is served
+        // from its filled texture, or by one whole dispatch this frame --
+        // never by a CPU readback.
+        bool laneThreeNew = false;
+        if (DeferredCommitOn() && !node.IsDirty() && !m_frozen && !AnalysisBitmap(node.id))
+        {
+            for (const auto& consumer : graph.Nodes())
+            {
+                if (laneThreeNew) break;
+                if (!consumer.needed || GpuLaneFor(consumer) != Effects::GpuBindingMode::Texture ||
+                    !AnyBindingSource(consumer, [&](uint32_t id) { return id == node.id; }))
+                    continue;
+                const GpuBindingPlan plan = PlanGpuBindings(consumer, graph, m_frameOptions.gpuBindings,
+                    [this](uint32_t producerId) { return BridgeFor(producerId) != nullptr; });
+                laneThreeNew = std::ranges::any_of(plan.entries, [&](const GpuBindingEntry& entry)
+                    { return entry.producerId == node.id && entry.mode == Effects::GpuBindingMode::Texture; });
+            }
+            auto* bridge = BridgeFor(node.id);
+            if (laneThreeNew && bridge && bridge->AnalysisTextureFilled() && EnsureAnalysisBitmap(node.id, dc))
+                laneThreeNew = false;
+            if (laneThreeNew)
+                m_nodes[node.id].ownStateChanged = true;
+        }
+        // An input change no dispatch has consumed yet (a dropped queue, a
+        // failed dispatch, a frame the node could not queue) queues it again
+        // with nothing new, unless the node is in error: RetryNode, or a
+        // change that clears the error, re-arms it.
+        const bool regionPending = runtime && !runtime->undispatchedRegion.IsNone() && node.runtimeError.empty();
+        const bool needsCompute = node.IsDirty() || laneThreeNew || regionPending ||
             bindingSourceQueued ||
             (hasImageOutput && !node.cachedOutput) ||
             (!hasImageOutput && node.analysisOutput.fields.empty() && !gpuOnlyResults);
@@ -119,8 +149,25 @@ namespace ShaderLab::Rendering::Evaluator
             [this](const auto* edge) { return m_computeQueue.queued.contains(edge->sourceNodeId); });
         // Queued at most once per frame: the dispatch reads the node's state
         // when it runs, so one entry is always current.
-        if ((primaryInput || inputFromQueuedProducer) && needsCompute && !m_frozen &&
-            !m_computeQueue.queued.contains(node.id))
+        const bool queues = (primaryInput || inputFromQueuedProducer) && needsCompute && !m_frozen &&
+                            !m_computeQueue.queued.contains(node.id);
+
+        // What the next dispatch consumes: kept here because the dirty state
+        // is cleared below, queued or not, and a queued dispatch can still be
+        // dropped or fail. Unknown is whole.
+        if (!m_frozen)
+        {
+            NodeRuntime& pending = m_nodes[node.id];
+            if (bindingSourceQueued) pending.ownStateChanged = true;
+            DirtyRegion input;
+            if (node.IsDirty())
+                input = m_frameOptions.dirtyRegions ? node.Region() : DirtyRegion::Whole();
+            if (pending.ownStateChanged || (queues && input.IsNone() && pending.undispatchedRegion.IsNone()))
+                input = DirtyRegion::Whole();
+            pending.undispatchedRegion.Union(input);
+        }
+
+        if (queues)
         {
             // The bridge must exist before ProcessDeferredCompute drives it.
             GetOrCreateEffect(dc, node);
@@ -139,7 +186,7 @@ namespace ShaderLab::Rendering::Evaluator
         // A frozen pass cannot queue, so a change it finds stays pending for
         // the next frame rather than being dropped.
         if (!m_frozen)
-            node.dirty = false;
+            node.ClearDirty();
         if (!hasImageOutput)
             node.cachedOutput = nullptr;
     }
@@ -192,9 +239,15 @@ namespace ShaderLab::Rendering::Evaluator
                         __uuidof(Effects::IEngineComputeTexture), texture.put_void())))
                     texture->RequestAnalysisTexture();
             }
-            if (skipFlag)
-                CollectAnalysisDemand(consumerNode, graph, publishedOrQueued, needsReadback, &m_computeQueue.skipExpected);
+            // Whatever the skip says, so a readback a CPU-served binding
+            // needs is counted as one with the skip off too (where only a
+            // consumer this frame renders can need it).
+            if (skipFlag || consumerNode.needed)
+                CollectAnalysisDemand(consumerNode, graph, publishedOrQueued, m_computeQueue.cpuDemand,
+                                  skipFlag ? &m_computeQueue.skipExpected : nullptr);
         }
+        if (skipFlag)
+            needsReadback.insert(m_computeQueue.cpuDemand.begin(), m_computeQueue.cpuDemand.end());
         return needsReadback;
     }
 
@@ -244,16 +297,16 @@ namespace ShaderLab::Rendering::Evaluator
     {
         NodeRuntime* runtime = FindRuntime(producer.id);
         if (!runtime || !runtime->cpuFieldsStale) return;
+        // A binding read on the CPU first: that cause is the one counted.
         std::unordered_set<uint32_t> cpu;
-        if (m_cpuAnalysisInterest.contains(producer.id))
-            cpu.insert(producer.id);
         for (const auto& consumer : graph.Nodes())
         {
             if (cpu.contains(producer.id)) break;
             if (AnyBindingSource(consumer, [&](uint32_t id) { return id == producer.id; }))
                 CollectAnalysisDemand(consumer, graph, ready, cpu, nullptr);
         }
-        if (!cpu.contains(producer.id)) return;
+        const bool forBinding = cpu.contains(producer.id);
+        if (!forBinding && !m_cpuAnalysisInterest.contains(producer.id)) return;
 
         // The results the producer's last dispatch left are still current.
         std::vector<float> floats;
@@ -265,9 +318,17 @@ namespace ShaderLab::Rendering::Evaluator
                 static_cast<uint32_t>(hr));
             return;
         }
+        ++(forBinding ? m_readbackStats.fallbackReadbacks : m_readbackStats.hintReadbacks);
+        const auto previous = producer.analysisOutput.fields;
         UnpackAnalysisFloats(producer, floats);
         runtime->cpuFieldsStale = false;
-        MarkBindingConsumersDirty(graph, producer.id);
+        runtime->fieldsAreLastDispatch = true;
+        PublishFieldsIfChanged(graph, producer, nullptr, true, &previous);
+    }
+
+    void EvaluatorCore::NoteFallbackBuild(const NodeVariantState& state)
+    {
+        ++(state.fallbackPending ? m_readbackStats.fallbackBuildsPending : m_readbackStats.fallbackBuilds);
     }
 
     ID2D1Bitmap1* EvaluatorCore::PreRenderInput(ID2D1DeviceContext5* dc, ID2D1Image* image,
@@ -313,32 +374,103 @@ namespace ShaderLab::Rendering::Evaluator
             winrt::com_ptr<ID2D1Bitmap1> newBitmap;
             if (const HRESULT hr = dc->CreateBitmap(D2D1::SizeU(w, h), nullptr, 0, bp, newBitmap.put()); FAILED(hr))
             {
+                ++m_preRenders.failures;
                 if (failHr) *failHr = hr;
                 return nullptr;
             }
             target = { std::move(newBitmap), w, h };
         }
+        // Another image, or the same one placed elsewhere, changed everywhere.
+        if (target.image != image || target.origin.x != px.left || target.origin.y != px.top)
+            target.pending = DirtyRegion::Whole();
+
+        // With dirty regions on, a producer's target redraws only where its
+        // output changed since the last draw (EvaluatorCore::MarkOutputChanged
+        // records it, whichever consumer runs); off, or for an unwired
+        // placeholder, it redraws whole on every dispatch.
+        const bool regions = m_frameOptions.dirtyRegions && producerPin.has_value();
+        const DirtyRegion region = regions ? target.pending.ClippedTo(px) : DirtyRegion::Whole();
+        m_preRenders.pixelsTarget += static_cast<uint64_t>(w) * h;
+        if (region.IsNone())
+        {
+            ++m_preRenders.reused;
+            return target.bitmap.get();
+        }
+        const bool whole = !region.IsRects() || region.Covers(px);
 
         // Its own draw session, whose EndDraw submits the draw before the
         // bridge's D3D11 compute reads it. Integer origin: see SnapComputeInputRect.
         HRESULT drawHr = S_OK;
+        const bool injectFailure = std::exchange(m_failNextPreRenderDraw, false);
         {
             ScopedTarget scopedTarget(dc, target.bitmap.get());
             dc->BeginDraw();
-            dc->Clear(D2D1::ColorF(0, 0, 0, 0));
-            dc->DrawImage(image, D2D1::Point2F(-static_cast<float>(px.left), -static_cast<float>(px.top)));
+            if (injectFailure)
+                dc->Clear(D2D1::ColorF(1.0f, 0.0f, 1.0f, 1.0f));   // test hook: contents a retry must not trust
+            else if (whole)
+            {
+                dc->Clear(D2D1::ColorF(0, 0, 0, 0));
+                dc->DrawImage(image, D2D1::Point2F(-static_cast<float>(px.left), -static_cast<float>(px.top)));
+            }
+            else
+            {
+                // Each rect clipped, no Clear: under SOURCE_COPY the image
+                // replaces what the clip holds, transparent where it is.
+                for (const auto& rect : region.Rects())
+                {
+                    const D2D1_RECT_F source{ static_cast<float>(rect.rect.left), static_cast<float>(rect.rect.top),
+                                              static_cast<float>(rect.rect.right), static_cast<float>(rect.rect.bottom) };
+                    const D2D1_RECT_F area{ source.left - px.left, source.top - px.top,
+                                            source.right - px.left, source.bottom - px.top };
+                    const D2D1_POINT_2F offset{ area.left, area.top };
+                    dc->PushAxisAlignedClip(area, D2D1_ANTIALIAS_MODE_ALIASED);
+                    dc->DrawImage(image, &offset, &source, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                                  D2D1_COMPOSITE_MODE_SOURCE_COPY);
+                    dc->PopAxisAlignedClip();
+                }
+            }
             drawHr = dc->EndDraw();
+            if (injectFailure && SUCCEEDED(drawHr)) drawHr = E_FAIL;
         }
         if (FAILED(drawHr))
         {
+            // What the bitmap holds now is unknown.
+            target.pending = DirtyRegion::Whole();
+            ++m_preRenders.failures;
             if (failHr) *failHr = drawHr;
             return nullptr;
+        }
+        target.pending = {};
+        target.image = image;
+        target.origin = { px.left, px.top };
+        ++m_preRenders.draws;
+        if (whole)
+        {
+            ++m_preRenders.wholeDraws;
+            m_preRenders.pixelsDrawn += static_cast<uint64_t>(w) * h;
+        }
+        else
+        {
+            m_preRenders.rectsDrawn += region.Rects().size();
+            for (const auto& rect : region.Rects())
+                m_preRenders.pixelsDrawn += static_cast<uint64_t>(rect.rect.right - rect.rect.left) *
+                                            static_cast<uint64_t>(rect.rect.bottom - rect.rect.top);
         }
         return target.bitmap.get();
     }
 
     bool EvaluatorCore::ProcessDeferredCompute(GraphModel& graph, ID2D1DeviceContext5* dc)
     {
+        m_policyCache.clear();
+        // The last step of a frame: the deferred commit's clock moves on at
+        // the next Normal Evaluate.
+        struct CloseFrame
+        {
+            bool& open;
+            ~CloseFrame() { open = false; }
+        } closeFrame{ m_frameOpen };
+        // Reset before the early returns: a frame that dispatches nothing reports 0.
+        m_dispatchesLastFrame = 0;
         if (m_computeQueue.entries.empty() || !dc) return false;
 
         // A Source with no output yet (a video before its first frame, an
@@ -349,28 +481,53 @@ namespace ShaderLab::Rendering::Evaluator
         {
             if (n.type == NodeType::Source && !n.cachedOutput)
             {
+                // What the dropped dispatches would have consumed is unknown now.
+                for (const auto& dropped : m_computeQueue.entries)
+                    m_nodes[dropped.nodeId].undispatchedRegion = DirtyRegion::Whole();
                 m_computeQueue.Clear();
                 return false;
             }
         }
 
         bool imageComputeProduced = false;
-        m_dispatchesLastFrame = 0;
 
         const bool skipFlag = m_frameOptions.skipUnneededCpuReadback;
         const std::unordered_set<uint32_t> needsReadback = PlanReadbacks(graph);
 
-        // Each distinct upstream image is pre-rendered ONCE per pass and
-        // shared across its consumers. This is the only pre-render: it runs
+        // Each distinct upstream image is pre-rendered ONCE per pass (again
+        // only where a refresh changed it) and shared across its consumers.
+        // This is the only pre-render: it runs
         // inside the draw session and after any producer in the same pass has
         // dispatched, so it is fresh by construction.
-        std::unordered_map<ID2D1Image*, ID2D1Bitmap1*> sharedPreRender;
+        // The bitmap, and the target pixels its draw counted (0 for an image
+        // read in place, which is not a target).
+        std::unordered_map<ID2D1Image*, std::pair<ID2D1Bitmap1*, uint64_t>> sharedPreRender;
         auto preRenderShared = [&](ID2D1Image* image, std::optional<std::pair<uint32_t, uint32_t>> producerPin,
                                    HRESULT* failHr) -> ID2D1Bitmap1*
         {
-            if (auto it = sharedPreRender.find(image); it != sharedPreRender.end()) return it->second;
+            if (auto it = sharedPreRender.find(image); it != sharedPreRender.end())
+            {
+                // Unless a frozen refresh since changed the producer's output.
+                bool current = true;
+                if (m_frameOptions.dirtyRegions && producerPin)
+                    if (const NodeRuntime* producer = FindRuntime(producerPin->first))
+                        if (const auto target = producer->preRenderTargets.find(producerPin->second);
+                            target != producer->preRenderTargets.end())
+                            current = target->second.pending.IsNone();
+                if (current)
+                {
+                    // Another use of the target, current: a reuse.
+                    if (const uint64_t pixels = it->second.second; pixels > 0)
+                    {
+                        m_preRenders.pixelsTarget += pixels;
+                        ++m_preRenders.reused;
+                    }
+                    return it->second.first;
+                }
+            }
+            const uint64_t targetBefore = m_preRenders.pixelsTarget;
             ID2D1Bitmap1* bitmap = PreRenderInput(dc, image, producerPin, failHr);
-            if (bitmap) sharedPreRender[image] = bitmap;
+            if (bitmap) sharedPreRender[image] = { bitmap, m_preRenders.pixelsTarget - targetBefore };
             return bitmap;
         };
 
@@ -418,7 +575,7 @@ namespace ShaderLab::Rendering::Evaluator
                     const auto* source = graph.FindNode(edge->sourceNodeId);
                     if (!source || IsComputeNode(*source) || !visited.insert(source->id).second)
                         continue;
-                    if (source->dirty) { upstreamDirty = true; break; }
+                    if (source->IsDirty()) { upstreamDirty = true; break; }
                     queue.push_back(source->id);
                 }
             }
@@ -434,6 +591,10 @@ namespace ShaderLab::Rendering::Evaluator
         auto failDispatch = [&](EffectNode& failed, std::wstring message)
         {
             failed.runtimeError = std::move(message);
+            // What the retry must consume is unknown now.
+            auto& failedRuntime = m_nodes[failed.id];
+            failedRuntime.undispatchedRegion = DirtyRegion::Whole();
+            failedRuntime.fieldsAreLastDispatch = false;
             if (!failed.outputPins.empty() && failed.cachedOutput)
             {
                 failed.cachedOutput = nullptr;
@@ -524,20 +685,80 @@ namespace ShaderLab::Rendering::Evaluator
             // A requested fresh read reads back whatever the skip says.
             const bool freshRequested = std::exchange(runtime.freshReadbackRequested, false);
             const bool readback = !skipFlag || needsReadback.contains(node->id) || freshRequested;
+            // Deferred commit: a producer with a bound field that commits
+            // after its dispatch reads back on every dispatch, without waiting
+            // unless a cause above needs the values now.
+            const FieldPolicies policies = DeferredCommitOn() ? CachedPoliciesOf(graph, *node) : FieldPolicies{};
+            const bool deferredProducer = DeferredCommitOn() && policies.AnyDeferred();
+            const bool deferredAsync = deferredProducer && !readback;
             // Async only with skip-readback on and the option set, and never
             // for a requested fresh read, which must block. A blocking read
             // retires the node's in-flight async copies, so none of them lands
             // later over the fresh values.
-            const bool asyncReadback = readback && skipFlag && !freshRequested &&
-                m_frameOptions.asyncAnalysisReadback;
+            const bool asyncReadback = deferredAsync ||
+                (readback && skipFlag && !freshRequested && m_frameOptions.asyncAnalysisReadback);
             bridge->SetAsyncReadback(asyncReadback);
+            // Whether the dispatch is over rects: what it will consume.
+            DirtyRegion willConsume = runtime.undispatchedRegion;
+            if (node->IsDirty())
+                willConsume.Union(m_frameOptions.dirtyRegions ? node->Region() : DirtyRegion::Whole());
+            const bool wholeInput = !willConsume.IsRects();
+            // A cell reduction recomputes only the cells of input 0 the rects
+            // touch, in the input texture's pixels: the image's rects less its
+            // origin, which a pre-render or in-place binding puts at texel 0.
+            // Only for a node whose sole wired image input is pin 0; a region
+            // from another pin is in that pin's space. Set on every dispatch
+            // (null: whole), so rects never outlive a dispatch that did not run.
+            {
+                std::vector<RECT> cellRects;
+                bool cellRectsGiven = false;
+                if (!wholeInput && m_frameOptions.incrementalReductions && !runtime.ownStateChanged &&
+                    edgeByPin.size() == 1 && edgeByPin.contains(0) && inputRaw[0])
+                {
+                    ScopedDpi96 dpi(dc);
+                    D2D1_RECT_L origin{};
+                    if (SUCCEEDED(GetSnappedPixelBounds(dc, inputRaw[0], origin)))
+                    {
+                        cellRectsGiven = true;
+                        for (const auto& rect : willConsume.Rects())
+                            cellRects.push_back({ rect.rect.left - origin.left, rect.rect.top - origin.top,
+                                                  rect.rect.right - origin.left, rect.rect.bottom - origin.top });
+                    }
+                }
+                bridge->SetInputDirtyRects(cellRectsGiven ? cellRects.data() : nullptr,
+                                           static_cast<UINT32>(cellRects.size()));
+            }
+            const bool filledBefore = bridge->AnalysisTextureFilled();
+            const uint64_t generationBefore = bridge->BufferGeneration();
+            const uint64_t seqBefore = bridge->LastScheduledReadback();
+            if (deferredProducer)
+            {
+                PrepareDeferredDispatch(*node, runtime, bridge, policies, wholeInput);
+            }
+            else
+            {
+                bridge->SetTextureCopy(D3D11ComputeRunner::TextureCopy::All);
+                // Off, or no longer deferred: the record describes nothing.
+                if (runtime.deferred.dispatches > 0) runtime.deferred = {};
+            }
+            std::vector<float> landedFloats;
             bridge->SetComputeCommandList(m_frameOptions.computeCommandList);
+            // What the bound consumers last rendered with, for the change gate.
+            const bool previousKnown = m_frameOptions.analysisChangeGate && runtime.fieldsAreLastDispatch;
+            std::vector<AnalysisFieldValue> previous;
+            if (previousKnown) previous = node->analysisOutput.fields;
             // Exact per-node attribution: this dispatch is its own D3D11
             // submission. The non-flushing EndNode: a compute dispatch is not
             // D2D work, and a flush here would land in the middle of this
             // pass's target juggling inside the host's draw session.
             if (m_gpuTimer) m_gpuTimer->BeginNode(node->id);
-            const bool dispatched = DispatchViaBridge(dc, graph, *node, inputRaw, preRendered, bridge, readback);
+            bool dispatched = false;
+            if (std::exchange(m_failNextComputeDispatch, false))
+                node->runtimeError = L"Injected dispatch failure (test hook)";
+            else
+                dispatched = DispatchViaBridge(dc, graph, *node, inputRaw, preRendered, bridge,
+                                               readback || deferredAsync,
+                                               deferredProducer ? &landedFloats : nullptr);
             if (m_gpuTimer) m_gpuTimer->EndNode(node->id);
             if (asyncReadback && bridge->HasPendingReadback())
                 runtime.asyncReadbackPending = true;
@@ -549,30 +770,89 @@ namespace ShaderLab::Rendering::Evaluator
                 runtime.lastHintReadback = std::chrono::steady_clock::now();
 
             // Lane 3: the copy pass has just run, so the texture holds this
-            // frame's values; wrapping it makes it attachable as an input.
+            // frame's values; wrapping it makes it attachable as an input. A
+            // new view is a new input for its consumers.
+            const ID2D1Bitmap1* viewBefore = runtime.analysisTexture.bitmap.get();
             if (m_computeQueue.textureWanted.contains(node->id))
                 EnsureAnalysisBitmap(node->id, dc);
-
-            // Consumers BOUND to this node's analysis values are stale now too,
-            // and no edge reaches them (a statistics node feeding a tone
-            // mapper's SourcePeakNits has no image output). The host's frozen
-            // post-dispatch Evaluate re-runs them this frame, so a value is
-            // used the frame it is made.
-            MarkBindingConsumersDirty(graph, node->id);
+            const bool viewChanged = runtime.analysisTexture.bitmap.get() != viewBefore;
 
             // This dispatch consumed the node's pending change.
+            if (dispatched && bridge->LastCellsTotal() > 0)
+            {
+                const bool incremental = bridge->LastCellsDispatched() < bridge->LastCellsTotal();
+                ++m_reduceCells.dispatches;
+                if (incremental) ++m_reduceCells.incremental;
+                m_reduceCells.cellsDispatched += bridge->LastCellsDispatched();
+                m_reduceCells.cellsTotal += bridge->LastCellsTotal();
+                ++runtime.cellDispatches;
+                if (incremental) ++runtime.cellIncremental;
+                runtime.cellsDispatched += bridge->LastCellsDispatched();
+                runtime.cellsTotal += bridge->LastCellsTotal();
+                runtime.lastCellMask = bridge->LastCellMask();
+                runtime.lastCellRectsGiven = bridge->LastCellRectsGiven();
+            }
             if (dispatched)
             {
-                node->dirty = false;
+                // A frozen pass since the queue (refreshUpstreamOf) can have
+                // re-dirtied the node; the dispatch read those inputs too.
+                if (node->IsDirty())
+                    runtime.undispatchedRegion.Union(m_frameOptions.dirtyRegions ? node->Region() : DirtyRegion::Whole());
+                node->ClearDirty();
                 dispatchedSinceRefresh = true;
                 // An async readback lands later and fills the fields then.
-                runtime.cpuFieldsStale = !readback;
-                if (!readback && m_computeQueue.skipExpected.contains(node->id))
+                runtime.cpuFieldsStale = !readback && !deferredProducer;
+                if (!readback && !deferredProducer && m_computeQueue.skipExpected.contains(node->id))
                     expectedSkips.push_back(node->id);
+
+                if (deferredAsync)
+                    ++m_readbackStats.deferredReadbacks;
+                else if (!readback)
+                    ++m_readbackStats.skippedReadbacks;
+                else if (m_computeQueue.cpuDemand.contains(node->id))
+                    ++m_readbackStats.fallbackReadbacks;
+                else if (freshRequested)
+                    ++m_readbackStats.freshReadbacks;
+                else if (!skipFlag)
+                    ++m_readbackStats.unskippedReadbacks;
+                else
+                    ++m_readbackStats.hintReadbacks;
+
+                const DirtyRegion consumed = std::exchange(runtime.undispatchedRegion, {});
+                runtime.lastDispatchInput = consumed.IsNone() ? DirtyRegion::Whole() : consumed;
+                runtime.ownStateChanged = false;
+                const bool current = readback && !asyncReadback && SUCCEEDED(bridge->LastReadbackResult()) &&
+                                     !node->analysisOutput.fields.empty();
+                runtime.fieldsAreLastDispatch = current;
+
+                // Consumers BOUND to this node's analysis values, which no
+                // edge reaches (a statistics node feeding a tone mapper's
+                // SourcePeakNits has no image output), wake when a value they
+                // read moved. The host's frozen post-dispatch Evaluate re-runs
+                // them this frame, so a value is used the frame it is made.
+                if (deferredProducer)
+                {
+                    // The record changes only when a readback lands, now for
+                    // a blocking one, else on a later frame.
+                    runtime.fieldsAreLastDispatch = false;
+                    const bool blocking = readback && !asyncReadback && SUCCEEDED(bridge->LastReadbackResult());
+                    FinishDeferredDispatch(graph, *node, runtime, bridge, policies, wholeInput, filledBefore,
+                                           generationBefore, seqBefore, blocking ? &landedFloats : nullptr);
+                    if (viewChanged) MarkBindingConsumersDirty(graph, node->id);
+                }
+                else
+                {
+                    const DirtyRegion judged = viewChanged ? DirtyRegion::Whole() : runtime.lastDispatchInput;
+                    PublishFieldsIfChanged(graph, *node, &judged, current, previousKnown ? &previous : nullptr);
+                }
             }
-            else if (!node->compilePending)
+            else
             {
-                failDispatch(*node, node->runtimeError);
+                runtime.undispatchedRegion = DirtyRegion::Whole();
+                runtime.fieldsAreLastDispatch = false;
+                MarkBindingConsumersDirty(graph, node->id);
+                if (!node->compilePending)
+                    failDispatch(*node, node->runtimeError);
             }
 
             if (dispatched && !node->outputPins.empty() && node->cachedOutput)
@@ -653,7 +933,8 @@ namespace ShaderLab::Rendering::Evaluator
         const std::vector<ID2D1Image*>& inputImages,
         const std::vector<ID2D1Bitmap1*>& preRenderedInputs,
         Effects::CustomComputeBridgeEffect* bridge,
-        bool readbackToCpu)
+        bool readbackToCpu,
+        std::vector<float>* readbackFloats)
     {
         if (!bridge) return false;
         auto& def = node.customEffect.value();
@@ -668,7 +949,7 @@ namespace ShaderLab::Rendering::Evaluator
             {
             case BaselineStatus::Pending:
                 // Skip this dispatch and look again next frame.
-                node.dirty = true;
+                node.MarkDirty();
                 return false;
             case BaselineStatus::Failed:
                 node.runtimeError = error.empty() ? L"D3D11 compute shader compile failed" : std::move(error);
@@ -706,13 +987,20 @@ namespace ShaderLab::Rendering::Evaluator
         std::shared_ptr<const std::vector<uint8_t>> variantBytecode;
         m_variants.QueueOptionVariants(node, runtime.variant, "cs_5_0",
             PlanGpuBindings(node, graph, m_frameOptions.gpuBindings).bits);
+        runtime.variant.fallbackInUse = false;
+        runtime.variant.fallbackPending = false;
         if (const uint64_t optionKey = Effects::OptionKeyFor(def, node.properties); macroBitset != 0 || optionKey != 0)
         {
             const auto identity = Effects::CompileIdentityOf(node);
             const auto choice = m_variants.Select(node, runtime.variant, identity.effectId, identity.effectVersion,
                                                   "cs_5_0", macroBitset, optionKey);
             if (macroBitset != 0 && choice.bits == 0)
+            {
                 bindingPlan.entries.clear();
+                runtime.variant.fallbackInUse = true;
+                runtime.variant.fallbackPending = choice.routingPending;
+                NoteFallbackBuild(runtime.variant);
+            }
             macroBitset     = choice.bits;
             variantBytecode = choice.bytes;
             if (variantBytecode)
@@ -816,7 +1104,10 @@ namespace ShaderLab::Rendering::Evaluator
         // Only a readback that ran overwrites the fields: a skipped one, an
         // async one (PollAsyncReadbacks unpacks it when it lands) and a failed
         // Map all return nothing, and none may replace the values with zeros.
-        if (readbackToCpu && analysisFloat4Count > 0 && !analysisFloats.empty())
+        // A deferred commit takes the floats to judge them itself.
+        if (readbackFloats)
+            *readbackFloats = std::move(analysisFloats);
+        else if (readbackToCpu && analysisFloat4Count > 0 && !analysisFloats.empty())
             UnpackAnalysisFloats(node, analysisFloats);
 
         // Downstream nodes read the bridge's wrapped output texture.

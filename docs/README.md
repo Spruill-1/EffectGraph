@@ -8,16 +8,17 @@ and the log's earlier entries are that history.
 
 ## Using EffectGraph
 
-- [EffectGraph API](architecture/effectgraph-api.md) — `IEffectGraphContext`, `IEffectGraphNode`, texture inputs, `Realize` / `RealizeTo`, shipping your own effects, plugins, analysis values on the GPU, versions.
+- [EffectGraph API](architecture/effectgraph-api.md) — `IEffectGraphContext`, `IEffectGraphNode`, texture inputs, `Realize` / `RealizeTo`, shipping your own effects, plugins, analysis values on the GPU, versions, dirty rects (`RealizeToIncremental`).
 - [Packages](development/packaging.md) — `EffectGraph.Native`, the C# `EffectGraph` bindings and `EffectGraph.Engine`: what they hold and how they are built.
 - [Building](development/build.md) — prerequisites, projects, tests, the ARM64 toolset trap.
 - [Releasing](development/releasing.md) — tag-driven publishing to nuget.org, the v143 toolset, SBOM and provenance, one-time setup.
+- [DDA recordings](development/dda-recording.md) — the desktop-duplication recording format the dirty-rect replay harness plays (`--recording`).
 
 ## How it works
 
 - [Pipeline Format](architecture/pipeline-format.md) — why the pipeline is always scRGB FP16.
 - [Graph Model](architecture/effect-graph-model.md) — `GraphModel`, `EffectNode`, `EffectEdge`, `PropertyValue`, JSON, dirty tracking.
-- [Topological Evaluation](architecture/topological-evaluation.md) — evaluation order and cycle detection.
+- [Topological Evaluation](architecture/topological-evaluation.md) — evaluation order and cycle detection, dirty regions.
 - [Compute Analysis Pipeline](architecture/compute-analysis-pipeline.md) — D2D compute conventions, readback, analysis output.
 - [D2D / D3D11 Hybrid Compute](architecture/d2d-d3d11-hybrid-compute.md) — `CustomComputeBridgeEffect`, `D3D11ComputeRunner`, GPU-binding routing.
 - [Display Monitoring](architecture/display-monitoring.md) and [Display Profile Mocking](architecture/display-profile-mocking.md) — the display a graph targets, real or simulated.

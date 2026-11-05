@@ -6,6 +6,9 @@
 #include "Effects/EffectBlob.h"
 #include "Effects/ShaderVariants.h"
 #include "Engine/Api/EffectGraph.h"
+#include "EffectGraphCoreNodes.h"
+#include "channel_statistics.effect.h"
+#include "ictcp_tone_map_hdr_sdr.effect.h"
 #include "luminance_statistics.effect.h"
 
 #include <cstdio>
@@ -96,6 +99,23 @@ namespace
              stats && SUCCEEDED(stats->GetName(name, 64)) && std::wstring(name) == L"Luminance Statistics");
         winrt::com_ptr<IEffectGraphNode> unknown;
         TEST("Clsid_UnknownRefused", context->CreateEffectById(CLSID_D2D1GaussianBlur, unknown.put()) == EFFECTGRAPH_E_UNKNOWN_EFFECT);
+
+        // The nodes that need no header have class ids in EffectGraphCoreNodes.h.
+        winrt::com_ptr<IEffectGraphNode> workingSpace, toneMap;
+        TEST("Clsid_CoreNodeCreates", SUCCEEDED(context->CreateEffectById(CLSID_EffectGraphWorkingSpace, workingSpace.put())) &&
+             workingSpace && SUCCEEDED(workingSpace->GetName(name, 64)) && std::wstring(name) == L"Working Space");
+
+        // The names each header gives Bind, and a chain bound by them alone.
+        TEST("Names_Fields", std::wstring_view(EffectGraphLuminanceStatistics_Fields_Max) == L"Max" &&
+             std::wstring_view(EffectGraphWorkingSpace_Fields_SdrWhiteNits) == L"SdrWhiteNits" &&
+             std::wstring_view(EffectGraphChannelStatistics_Fields_Nonzero) == L"Nonzero%");
+        TEST("Names_Parameters", std::wstring_view(EffectGraphLuminanceStatistics_Parameters_ClipNits) == L"ClipNits" &&
+             std::wstring_view(EffectGraphIctcpToneMapHdrSdr_Parameters_SourcePeakNits) == L"SourcePeakNits");
+        TEST("Names_Bind", SUCCEEDED(context->CreateEffectById(CLSID_EffectGraphIctcpToneMapHdrSdr, toneMap.put())) &&
+             SUCCEEDED(stats->Bind(EffectGraphLuminanceStatistics_Parameters_ClipNits, workingSpace.get(),
+                                   EffectGraphWorkingSpace_Fields_SdrWhiteNits)) &&
+             SUCCEEDED(toneMap->Bind(EffectGraphIctcpToneMapHdrSdr_Parameters_SourcePeakNits, stats.get(),
+                                     EffectGraphLuminanceStatistics_Fields_Max)));
 
         // A built-in no header registered names the header to include.
         const auto message = Effects::MissingBuiltInMessage(L"Luminance Statistics");

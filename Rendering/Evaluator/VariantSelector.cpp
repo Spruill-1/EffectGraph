@@ -120,6 +120,9 @@ namespace ShaderLab::Rendering::Evaluator
             choice.bytes = GetBuild(def, effectId, effectVersion, target, bits, 0, /*urgent*/ false, pendingKey);
             if (choice.bytes) choice.options = 0;
         }
+        // From this selection's requests only: state.wanted can still hold an
+        // earlier selection's key until Poll sees that compile finish.
+        choice.routingPending = bits != 0 && pendingKey.has_value();
         // Drop the GPU routing, keeping the options.
         if (!choice.bytes && bits != 0)
         {
@@ -199,7 +202,7 @@ namespace ShaderLab::Rendering::Evaluator
         // Ready, failed or evicted: evaluate the node again.
         if (state.wanted && cache.GetStatus(*state.wanted) != Effects::BytecodeStatus::Pending)
         {
-            node.dirty = true;
+            node.MarkDirty();
             state.wanted.reset();
         }
         if (state.optionPrecompile && !state.optionPrecompile->done)

@@ -59,3 +59,23 @@ IEffectGraphContextInternal : public IEffectGraphContext
     // stays the host's to delete.
     STDMETHOD_(void, ReplaceGraph)(ShaderLab::Graph::GraphModel&& graph) PURE;
 };
+
+namespace ShaderLab::Api::Testing
+{
+    // Fault injection for test code only: the next incremental draw of a
+    // rect ignores its clip and draws the whole image, still reporting the
+    // rects. It lets a test prove that verifyDirtyRegions sees a draw that
+    // escapes its rects. Cleared by the draw it affects.
+    inline bool g_unclipNextIncrementalDraw = false;
+
+    // Counters for test code only. Every CopySubresourceRegion an applied
+    // move issues, and those among them whose source and destination are
+    // the same resource (undefined in D3D11 when the boxes overlap; a move
+    // goes through a scratch texture, so this stays 0).
+    inline uint64_t g_moveCopies = 0;
+    inline uint64_t g_moveCopiesInPlace = 0;
+    // The moves a context held for MoveRects bookkeeping after its last
+    // ingest or prune: what keeps them bounded is under test.
+    inline size_t g_heldMoves = 0;
+    inline size_t g_heldCollapsedMoves = 0;
+}

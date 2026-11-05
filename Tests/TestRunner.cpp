@@ -4,6 +4,7 @@
 #include "EffectGraphBuiltIns.h"
 #include "Rendering/DeviceStack.h"
 #include "Engine/EngineBootstrap.h"
+#include "Engine/Api/EffectGraphPlugin.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -18,6 +19,14 @@
 //
 //   <runner>.exe [--adapter warp|default] [--tag <tag>[,<tag>...]]
 //                [--filter <text>] [--list] [--require-fixtures]
+//                [--plugin <effect plugin .dll>] [--recording <dir>]
+//
+// --plugin loads an EffectGraph plugin before the first case, so cases can
+// use effects kept outside this repository; a case that needs one and finds
+// none reports itself not run.
+//
+// --recording names a folder of desktop-duplication recordings for the
+// replay cases; without it they play their synthetic scenarios only.
 //
 // Exit code = number of failures (0 = all passed).
 
@@ -41,6 +50,8 @@ namespace
         bool warp = false;
         bool list = false;
         bool requireFixtures = false;
+        std::wstring plugin;      // --plugin, made absolute
+        std::wstring recording;   // --recording, made absolute
         Tag tags = Tag::None;     // any of these; None selects every case
         std::string filter;       // substring of the case name
         std::string error;
@@ -58,6 +69,7 @@ namespace
     {
         std::printf("Usage: %s.exe [--adapter warp|default] [--tag <tag>[,<tag>...]]\n"
                     "         [--filter <text>] [--list] [--require-fixtures]\n"
+                    "         [--plugin <effect plugin .dll>] [--recording <dir>]\n"
                     "Tags:", RunnerName().c_str());
         for (const auto& entry : cTagNames) std::printf(" %s", entry.name);
         std::printf("\nA manual case runs only when --filter matches it.\n");
@@ -108,6 +120,24 @@ namespace
             else if (arg == "--require-fixtures")
             {
                 options.requireFixtures = true;
+            }
+            else if (arg == "--plugin" && hasValue)
+            {
+                std::error_code ec;
+                const std::filesystem::path path = std::filesystem::absolute(argv[++i], ec);
+                if (ec || !std::filesystem::is_regular_file(path, ec))
+                    options.error = std::string("plugin '") + argv[i] + "' is not a file";
+                else
+                    options.plugin = path.wstring();
+            }
+            else if (arg == "--recording" && hasValue)
+            {
+                std::error_code ec;
+                const std::filesystem::path path = std::filesystem::absolute(argv[++i], ec);
+                if (ec || !std::filesystem::is_directory(path, ec))
+                    options.error = std::string("recording '") + argv[i] + "' is not a folder";
+                else
+                    options.recording = path.wstring();
             }
             else
             {
@@ -203,6 +233,23 @@ namespace
             ? "on" : "off (WARP or CI; SHADERLAB_TIMING_TESTS=1 forces them)");
     }
 
+    // Loads --plugin into the engine before any context exists. A plugin
+    // asked for and not loaded is fatal: its cases would only report
+    // themselves not run.
+    bool LoadRunnerPlugin(const std::wstring& path)
+    {
+        if (path.empty()) return true;
+        const HRESULT hr = EffectGraphLoadPlugin(path.c_str());
+        if (FAILED(hr))
+        {
+            std::printf("FATAL: EffectGraphLoadPlugin(%ls) failed 0x%08X\n", path.c_str(), static_cast<uint32_t>(hr));
+            return false;
+        }
+        g_pluginPath = path;
+        std::printf("Plugin: %ls (0x%08X)\n", path.c_str(), static_cast<uint32_t>(hr));
+        return true;
+    }
+
     // The D3D11 device every case's context is created on. Any failure here
     // is fatal: it would surface later as a null dereference inside some test.
     bool CreateTestDevice(bool warp)
@@ -287,11 +334,15 @@ int main(int argc, char* argv[])
 
     std::printf("%s\n", RunnerName().c_str());
     std::printf("=====================\n");
+    if (!LoadRunnerPlugin(options.plugin))
+        return 1;
     if (!CreateTestDevice(options.warp))
         return 1;
     std::printf("Device: %s\n", options.warp ? "WARP" : "Hardware");
     ConfigureTimingAssertions(options.warp);
     g_requireFixtures = options.requireFixtures;
+    g_recordingPath = options.recording;
+    if (!g_recordingPath.empty()) std::printf("Recording: %ls\n", g_recordingPath.c_str());
     std::printf("Cases: %zu of %zu\n", cases.size(), TestRegistry().size());
 
     for (const auto& testCase : cases)
@@ -302,6 +353,8 @@ int main(int argc, char* argv[])
     std::printf("\n========================================\n");
     if (g_skipped > 0)
         std::printf("SKIPPED %d (missing fixtures; --require-fixtures fails them)\n", g_skipped);
+    if (g_notRun > 0)
+        std::printf("NOT RUN %d (need a runner option, such as --plugin or --recording)\n", g_notRun);
     if (g_failed == 0)
         std::printf("ALL %d TESTS PASSED\n", g_passed);
     else

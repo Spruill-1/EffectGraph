@@ -118,6 +118,7 @@
     <ClInclude Include="Graph\ClockModel.h" />
     <ClInclude Include="Graph\PropertyWrite.h" />
     <ClInclude Include="Graph\NodeContracts.h" />
+    <ClInclude Include="Graph\DirtyRegion.h" />
     <ClInclude Include="Graph\SourceKind.h" />
     <ClInclude Include="Graph\ParameterModel.h" />
     <ClInclude Include="Graph\ValueFormat.h" />
@@ -203,6 +204,7 @@
     <ClCompile Include="Rendering\Evaluator\CachePolicy.cpp" />
     <ClCompile Include="Rendering\Evaluator\ComputeDispatch.cpp" />
     <ClCompile Include="Rendering\Evaluator\ComputeScheduler.cpp" />
+    <ClCompile Include="Rendering\Evaluator\DeferredCommit.cpp" />
     <ClCompile Include="Rendering\Evaluator\CustomEffectNode.cpp" />
     <ClCompile Include="Rendering\Evaluator\EffectFactory.cpp" />
     <ClCompile Include="Rendering\Evaluator\EvaluatorCore.cpp" />

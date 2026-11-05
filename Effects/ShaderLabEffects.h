@@ -62,6 +62,9 @@ namespace ShaderLab::Effects
         // See CustomEffectDefinition::variadicInputs.
         bool variadicInputs{ false };
 
+        // See CustomEffectDefinition::shiftInvariant.
+        bool shiftInvariant{ false };
+
         // Host-computed cbuffer contents ("derived constants"). For values
         // that depend only on the node's parameters but are expensive --
         // a gamut boundary polygon, a fit scale per intensity -- which a

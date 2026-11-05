@@ -194,10 +194,88 @@ namespace ShaderLab::Rendering::Evaluator
         {
             if (auto* consumer = graph.FindNode(consumerId))
             {
-                consumer->dirty = true;
+                consumer->MarkDirty();
                 graph.MarkDownstreamDirty(consumerId);
             }
         }
+    }
+
+    namespace
+    {
+        // Bit for bit: "unchanged" must mean a consumer renders the same bytes.
+        bool SameBits(const AnalysisFieldValue& a, const AnalysisFieldValue& b)
+        {
+            return a.type == b.type &&
+                   std::memcmp(a.components.data(), b.components.data(), sizeof(a.components)) == 0 &&
+                   a.arrayData.size() == b.arrayData.size() &&
+                   (a.arrayData.empty() ||
+                    std::memcmp(a.arrayData.data(), b.arrayData.data(), a.arrayData.size() * sizeof(float)) == 0);
+        }
+
+        // Whether a binding of `consumer` reads a field of `producerId` named in `changed`.
+        bool ReadsChangedField(const EffectNode& consumer, uint32_t producerId,
+                               const std::unordered_set<std::wstring>& changed)
+        {
+            for (const auto& [property, binding] : consumer.propertyBindings)
+            {
+                if (binding.wholeArray)
+                {
+                    if (binding.wholeArraySourceNodeId == producerId && changed.contains(binding.wholeArraySourceFieldName))
+                        return true;
+                    continue;
+                }
+                for (const auto& source : binding.sources)
+                    if (source && source->sourceNodeId == producerId && changed.contains(source->sourceFieldName))
+                        return true;
+            }
+            return false;
+        }
+    }
+
+    void EvaluatorCore::PublishFieldsIfChanged(GraphModel& graph, const EffectNode& producer,
+                                               const DirtyRegion* inputRegion, bool current,
+                                               const std::vector<AnalysisFieldValue>* previous)
+    {
+        const uint32_t producerId = producer.id;
+        std::vector<uint32_t> consumers;
+        for (const auto& consumer : graph.Nodes())
+            if (AnyBindingSource(consumer, [producerId](uint32_t sourceNodeId) { return sourceNodeId == producerId; }))
+                consumers.push_back(consumer.id);
+        if (consumers.empty()) return;
+
+        const auto wakeAll = [&] { MarkBindingConsumersDirty(graph, producerId); };
+        if (!m_frameOptions.analysisChangeGate)
+            return wakeAll();
+        // A dispatch over the whole input, or over the node's own new state,
+        // wakes them all the same frame: nothing to judge.
+        if (inputRegion && !inputRegion->IsRects())
+        {
+            ++m_bindingGate.whole;
+            return wakeAll();
+        }
+        if (!current || !previous || previous->empty())
+        {
+            if (inputRegion) ++m_bindingGate.noValue;
+            return wakeAll();
+        }
+
+        std::unordered_set<std::wstring> changed;
+        for (const auto& field : producer.analysisOutput.fields)
+        {
+            const auto before = std::ranges::find(*previous, field.name, &AnalysisFieldValue::name);
+            if (before == previous->end() || !SameBits(*before, field))
+                changed.insert(field.name);
+        }
+        bool woke = false;
+        for (uint32_t consumerId : consumers)
+        {
+            auto* consumer = graph.FindNode(consumerId);
+            if (!consumer || !ReadsChangedField(*consumer, producerId, changed)) continue;
+            consumer->MarkDirty();
+            graph.MarkDownstreamDirty(consumerId);
+            woke = true;
+        }
+        if (inputRegion) ++(woke ? m_bindingGate.changed : m_bindingGate.unchanged);
     }
 
     bool EvaluatorCore::HasPendingReadbacks() const
@@ -220,10 +298,47 @@ namespace ShaderLab::Rendering::Evaluator
                 continue;
             }
             std::vector<float> floats;
+            if (runtime.deferred.dispatches > 0)
+            {
+                // A deferred commit: the delivered slot is judged by the
+                // dispatch it copied. Older slots were retired unread.
+                uint64_t seq = 0;
+                auto& inFlight = runtime.deferred.inFlight;
+                const bool delivered = bridge->PollAnalysisReadback(floats, &seq);
+                if (delivered && !floats.empty())
+                {
+                    const auto slot = std::ranges::find(inFlight, seq, &DeferredCommit::InFlight::seq);
+                    if (slot != inFlight.end())
+                    {
+                        const auto landed = *slot;
+                        std::erase_if(inFlight, [seq](const auto& entry) { return entry.seq <= seq; });
+                        any |= LandDeferred(graph, *node, runtime, landed, floats);
+                    }
+                }
+                else if (!delivered && seq != 0)
+                {
+                    // The Map failed for good, retiring the slot and every
+                    // older one unread: nothing judged their values. A whole
+                    // dispatch re-judges them -- its stamp marks the fields
+                    // unknown and its own readback records them.
+                    std::erase_if(inFlight, [seq](const auto& entry) { return entry.seq <= seq; });
+                    ++m_deferredStats.readbackFailures;
+                    ReportAnalysisReadbackFailure(*node, bridge->LastPollResult(), L"the deferred commit's Map");
+                    node->MarkDirty();
+                    runtime.ownStateChanged = true;
+                    any = true;
+                }
+                runtime.asyncReadbackPending = bridge->HasPendingReadback();
+                if (!runtime.asyncReadbackPending) inFlight.clear();
+                continue;
+            }
             if (bridge->PollAnalysisReadback(floats) && !floats.empty())
             {
+                // Judged by value: CPU-served consumers rendered with the
+                // fields being replaced; lane-3 ones were woken at the dispatch.
+                const auto previous = node->analysisOutput.fields;
                 UnpackAnalysisFloats(*node, floats);
-                MarkBindingConsumersDirty(graph, id);
+                PublishFieldsIfChanged(graph, *node, nullptr, true, &previous);
                 any = true;
             }
             runtime.asyncReadbackPending = bridge->HasPendingReadback();

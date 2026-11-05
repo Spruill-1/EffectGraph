@@ -103,7 +103,7 @@ namespace ShaderLab::Rendering
 
             if (nodeChanged)
             {
-                node.dirty = true;
+                node.MarkDirty();
                 anyChanged = true;
             }
         }

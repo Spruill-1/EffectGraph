@@ -64,15 +64,15 @@ namespace ShaderLab::Tests
 
         // Property edits mark the node dirty only when applied.
         const uint32_t floatId = graph.AddNode(CreateBuiltIn(L"Float Parameter"));
-        graph.FindNode(floatId)->dirty = false;
+        graph.FindNode(floatId)->ClearDirty();
         TEST("Edit_MissingKeyRefused", !Graph::EditNodeProperty(graph, floatId, L"Nope",
             [](Graph::PropertyValue&) { return true; }));
         TEST("Edit_DeclinedLeavesClean", !Graph::EditNodeProperty(graph, floatId, L"Value",
-            [](Graph::PropertyValue&) { return false; }) && !graph.FindNode(floatId)->dirty);
+            [](Graph::PropertyValue&) { return false; }) && !graph.FindNode(floatId)->IsDirty());
         TEST("Edit_Applied", Graph::EditNodeProperty(graph, floatId, L"Value",
             [](Graph::PropertyValue& v) { v = 0.75f; return true; }));
         TEST("Edit_WroteAndDirtied", std::get<float>(graph.FindNode(floatId)->properties.at(L"Value")) == 0.75f &&
-            graph.FindNode(floatId)->dirty);
+            graph.FindNode(floatId)->IsDirty());
 
         // Numeric Expression inputs.
         const uint32_t exprId = graph.AddNode(CreateBuiltIn(L"Numeric Expression"));
@@ -98,9 +98,9 @@ namespace ShaderLab::Tests
         // Pasting: fresh state, fresh GUID, only internal edges.
         auto source = CreateBuiltIn(L"Gamut Source");
         source.runtimeError = L"old";
-        source.dirty = false;
+        source.ClearDirty();
         const auto clone = Graph::CloneNodeForPaste(source);
-        TEST("Clone_FreshState", clone.dirty && clone.runtimeError.empty() && clone.cachedOutput == nullptr);
+        TEST("Clone_FreshState", clone.IsDirty() && clone.runtimeError.empty() && clone.cachedOutput == nullptr);
         TEST("Clone_FreshGuid", clone.customEffect.has_value() &&
             !IsEqualGUID(clone.customEffect->shaderGuid, source.customEffect->shaderGuid));
 
@@ -122,48 +122,48 @@ namespace ShaderLab::Tests
         printf("\n=== Node Setters ===\n");
         Graph::GraphModel graph;
         const uint32_t id = graph.AddNode(CreateBuiltIn(L"Gamut Highlight"));
-        auto clean = [&] { graph.FindNode(id)->dirty = false; return graph.FindNode(id); };
+        auto clean = [&] { graph.FindNode(id)->ClearDirty(); return graph.FindNode(id); };
 
         auto* node = clean();
         TEST("Set_PropertyWritesAndDirties", Graph::SetNodeProperty(graph, id, L"OverlayStrength", 0.25f) &&
-            std::get<float>(node->properties.at(L"OverlayStrength")) == 0.25f && node->dirty);
+            std::get<float>(node->properties.at(L"OverlayStrength")) == 0.25f && node->IsDirty());
         TEST("Set_MissingNodeRefused", !Graph::SetNodeProperty(graph, 999, L"OverlayStrength", 0.25f) &&
             !Graph::RenameNode(graph, 999, L"x") && !Graph::RetryNode(graph, 999));
 
         node = clean();
         TEST("Set_MediaDirties", Graph::SetNodeMedia(graph, id, L"clip.mp4") &&
-            node->mediaPath == L"clip.mp4" && node->dirty);
+            node->mediaPath == L"clip.mp4" && node->IsDirty());
 
         node = clean();
         TEST("Set_RenameDoesNotDirty", Graph::RenameNode(graph, id, L"Renamed") &&
-            node->name == L"Renamed" && !node->dirty);
+            node->name == L"Renamed" && !node->IsDirty());
 
         node = clean();
         Graph::SetNodePosition(*node, { 10.0f, 20.0f });
         const uint32_t moved[] = { id, 999 };
         Graph::MoveNodes(graph, moved, { 1.0f, -2.0f });
-        TEST("Set_MoveOffsetsWithoutDirty", node->position.x == 11.0f && node->position.y == 18.0f && !node->dirty);
+        TEST("Set_MoveOffsetsWithoutDirty", node->position.x == 11.0f && node->position.y == 18.0f && !node->IsDirty());
 
         node = clean();
         node->runtimeError = L"failed";
-        TEST("Set_RetryClearsErrorAndDirties", Graph::RetryNode(graph, id) && node->runtimeError.empty() && node->dirty);
+        TEST("Set_RetryClearsErrorAndDirties", Graph::RetryNode(graph, id) && node->runtimeError.empty() && node->IsDirty());
 
         node = clean();
         node->cachedOutput = reinterpret_cast<ID2D1Image*>(static_cast<uintptr_t>(0x10));
-        TEST("Set_ResetOutputDropsImage", Graph::ResetNodeOutput(graph, id) && !node->cachedOutput && node->dirty);
+        TEST("Set_ResetOutputDropsImage", Graph::ResetNodeOutput(graph, id) && !node->cachedOutput && node->IsDirty());
 
         node = clean();
         node->cachedOutput = reinterpret_cast<ID2D1Image*>(static_cast<uintptr_t>(0x10));
         Graph::CustomEffectDefinition replacement = *node->customEffect;
         replacement.hlslSource = L"// replaced";
         TEST("Set_ReplaceEffect", Graph::ReplaceCustomEffect(graph, id, replacement) &&
-            node->customEffect->hlslSource == L"// replaced" && !node->cachedOutput && node->dirty);
+            node->customEffect->hlslSource == L"// replaced" && !node->cachedOutput && node->IsDirty());
 
         node = clean();
         TEST("Set_ComponentNeedsBinding", !Graph::SetBindingComponent(graph, id, L"OverlayStrength", 2));
         node->propertyBindings[L"OverlayStrength"].sources.push_back(Graph::ComponentSource{ 1, L"Mean", 0, 0 });
         TEST("Set_ComponentRepoints", Graph::SetBindingComponent(graph, id, L"OverlayStrength", 2) &&
-            node->propertyBindings[L"OverlayStrength"].sources[0]->sourceComponent == 2 && node->dirty);
+            node->propertyBindings[L"OverlayStrength"].sources[0]->sourceComponent == 2 && node->IsDirty());
 
         Graph::RecordNodeGpuTime(*node, 1.5, Graph::GpuNodeState::Fused);
         TEST("Set_GpuTimeRecorded", node->lastGpuMs == 1.5 && node->gpuState == Graph::GpuNodeState::Fused);
@@ -173,7 +173,7 @@ namespace ShaderLab::Tests
             std::get<float>(instance.properties.at(L"OverlayStrength")) == 0.25f &&
             instance.customEffect->hlslSource == node->customEffect->hlslSource);
         TEST("Set_InstanceNewGuidNoBindings", instance.customEffect->shaderGuid != node->customEffect->shaderGuid &&
-            instance.propertyBindings.empty() && instance.dirty);
+            instance.propertyBindings.empty() && instance.IsDirty());
 
         Graph::CustomEffectDefinition def;
         def.shaderType = Graph::CustomShaderType::PixelShader;
@@ -208,7 +208,7 @@ namespace ShaderLab::Tests
         node->customEffect->shaderLabEffectVersion = desc->effectVersion - 1;
         node->properties.erase(L"OverlayR");
         ShaderLab::Graph::SetNodeProperty(*node, L"Retired", 1.0f);
-        node->dirty = false;
+        node->ClearDirty();
 
         TEST("Upgrade_OutdatedFound", Effects::NewerDescriptorFor(*node) == desc);
         const auto upgraded = Effects::UpgradeOutdatedNodes(graph);
@@ -219,7 +219,7 @@ namespace ShaderLab::Tests
         TEST("Upgrade_KeepsValue", std::get<float>(node->properties.at(L"OverlayStrength")) == 0.125f);
         TEST("Upgrade_RestoresMissing", node->properties.contains(L"OverlayR"));
         TEST("Upgrade_DropsRetired", !node->properties.contains(L"Retired"));
-        TEST("Upgrade_Dirty", node->dirty);
+        TEST("Upgrade_Dirty", node->IsDirty());
         TEST("Upgrade_NothingLeft", Effects::UpgradeOutdatedNodes(graph).empty());
     }
 

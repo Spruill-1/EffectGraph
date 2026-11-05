@@ -15,7 +15,7 @@ namespace ShaderLab::Graph
     uint32_t GraphModel::AddNode(EffectNode node)
     {
         node.id = m_nextId++;
-        node.dirty = true;
+        node.MarkDirty();
         m_nodes.push_back(std::move(node));
         return m_nodes.back().id;
     }
@@ -30,7 +30,7 @@ namespace ShaderLab::Graph
         // changed instead of the whole graph.
         for (const auto& e : m_edges)
             if (e.sourceNodeId == nodeId)
-                if (auto* dst = FindNode(e.destNodeId)) dst->dirty = true;
+                if (auto* dst = FindNode(e.destNodeId)) dst->MarkDirty();
 
         // Remove all edges referencing this node, then refit the pins of the
         // nodes it fed.
@@ -50,7 +50,7 @@ namespace ShaderLab::Graph
             {
                 return pair.second.ReadsFrom(nodeId);
             });
-            if (removed) node.dirty = true;
+            if (removed) node.MarkDirty();
         }
 
         // Remove the node itself.
@@ -122,7 +122,7 @@ namespace ShaderLab::Graph
         DisconnectInput(dstId, dstPin);
 
         m_edges.push_back({ srcId, srcPin, dstId, dstPin });
-        FindNode(dstId)->dirty = true;
+        FindNode(dstId)->MarkDirty();
         FitVariadicPins(dstId);
         return true;
     }
@@ -135,7 +135,7 @@ namespace ShaderLab::Graph
         {
             m_edges.erase(it);
             if (auto* dst = FindNode(dstId))
-                dst->dirty = true;
+                dst->MarkDirty();
             FitVariadicPins(dstId);
             return true;
         }
@@ -149,7 +149,7 @@ namespace ShaderLab::Graph
             return e.destNodeId == dstId && e.destPin == dstPin;
         });
         if (removed)
-            if (auto* dst = FindNode(dstId)) dst->dirty = true;
+            if (auto* dst = FindNode(dstId)) dst->MarkDirty();
         FitVariadicPins(dstId);
     }
 
@@ -374,7 +374,7 @@ namespace ShaderLab::Graph
         if (!anyLeft)
             return UnbindProperty(nodeId, propertyName);
         // Only the consumer changed; the evaluator pulls it downstream.
-        node->dirty = true;
+        node->MarkDirty();
         return true;
     }
 
@@ -488,7 +488,7 @@ namespace ShaderLab::Graph
         destNode->propertyBindings[propertyName] = std::move(binding);
         // The consumer is all that changed. The evaluator pulls dirtiness
         // downstream along edges and bindings, so nothing else is marked.
-        destNode->dirty = true;
+        destNode->MarkDirty();
         return {};  // success
     }
 
@@ -498,7 +498,7 @@ namespace ShaderLab::Graph
         if (!node) return false;
         if (node->propertyBindings.erase(propertyName) == 0)
             return false;
-        node->dirty = true;
+        node->MarkDirty();
         return true;
     }
 
@@ -509,43 +509,90 @@ namespace ShaderLab::Graph
     void GraphModel::MarkAllDirty()
     {
         for (auto& node : m_nodes)
-            node.dirty = true;
+            node.MarkDirty();
     }
 
-    void GraphModel::MarkReachableDirty(std::vector<uint32_t> from)
+    void GraphModel::PropagateRegions(std::unordered_map<uint32_t, DirtyRegion>& regions, bool useRegions) const
     {
-        std::unordered_map<uint32_t, std::vector<uint32_t>> downstream;
-        ForEachDependency(DependencyKind::Image, [&](uint32_t src, uint32_t dst)
+        // A node is enqueued again whenever its union grows, so a second
+        // path's rects reach everything after it; regions only grow, so the
+        // walk ends.
+        std::vector<uint32_t> work;
+        for (const auto& [id, region] : regions) work.push_back(id);
+        while (!work.empty())
         {
-            downstream[src].push_back(dst);
-        });
-
-        std::unordered_set<uint32_t> visited(from.begin(), from.end());
-        for (size_t i = 0; i < from.size(); ++i)
-        {
-            auto it = downstream.find(from[i]);
-            if (it == downstream.end()) continue;
-            for (uint32_t dst : it->second)
+            const uint32_t id = work.back();
+            work.pop_back();
+            const EffectNode* src = FindNode(id);
+            if (!src) continue;
+            const DirtyRegion from = regions[id];
+            for (const auto& edge : m_edges)
             {
-                if (!visited.insert(dst).second) continue;
-                if (auto* node = FindNode(dst)) node->dirty = true;
-                from.push_back(dst);
+                if (edge.sourceNodeId != id) continue;
+                const EffectNode* dst = FindNode(edge.destNodeId);
+                if (!dst) continue;
+                const DirtyRegion mapped = useRegions ? MapRegion(*src, *dst, edge, from) : DirtyRegion::Whole();
+                if (mapped.IsNone()) continue;
+                auto [it, inserted] = regions.try_emplace(edge.destNodeId, mapped);
+                if (!inserted)
+                {
+                    const DirtyRegion before = it->second;
+                    it->second.Union(mapped);
+                    if (it->second == before) continue;
+                }
+                work.push_back(edge.destNodeId);
             }
         }
     }
 
-    void GraphModel::PropagateDirtyDownstream()
+    void GraphModel::MarkReachableDirty(std::vector<uint32_t> from, bool useRegions)
+    {
+        std::unordered_map<uint32_t, DirtyRegion> regions;
+        std::unordered_set<uint32_t> cleanStarts;
+        for (uint32_t id : from)
+        {
+            const EffectNode* node = FindNode(id);
+            if (!node) continue;
+            // A start node that is not dirty itself still dirties what it
+            // feeds, and stays clean unless something upstream reaches it.
+            if (!node->IsDirty()) cleanStarts.insert(id);
+            regions[id] = useRegions && node->IsDirty() ? node->Region() : DirtyRegion::Whole();
+        }
+        PropagateRegions(regions, useRegions);
+        for (const auto& [id, region] : regions)
+        {
+            if (cleanStarts.contains(id)) continue;
+            if (auto* node = FindNode(id)) node->MarkDirty(region);
+        }
+    }
+
+    void GraphModel::PropagateDirtyDownstream(bool useRegions)
     {
         std::vector<uint32_t> dirty;
-        for (const auto& node : m_nodes)
-            if (node.dirty) dirty.push_back(node.id);
+        for (auto& node : m_nodes)
+        {
+            if (!node.IsDirty()) continue;
+            if (!useRegions && !node.Region().IsWhole()) node.MarkDirty();
+            dirty.push_back(node.id);
+        }
         if (!dirty.empty())
-            MarkReachableDirty(std::move(dirty));
+            MarkReachableDirty(std::move(dirty), useRegions);
     }
 
     void GraphModel::MarkDownstreamDirty(uint32_t nodeId)
     {
-        MarkReachableDirty({ nodeId });
+        MarkReachableDirty({ nodeId }, true);
+    }
+
+    DirtyRegion GraphModel::PendingDirtyRegion(uint32_t nodeId, bool useRegions) const
+    {
+        std::unordered_map<uint32_t, DirtyRegion> regions;
+        for (const auto& node : m_nodes)
+            if (node.IsDirty()) regions[node.id] = useRegions ? node.Region() : DirtyRegion::Whole();
+        PropagateRegions(regions, useRegions);
+        const auto it = regions.find(nodeId);
+        const auto* node = FindNode(nodeId);
+        return it == regions.end() || !node ? DirtyRegion{} : EmittedRegion(*node, it->second);
     }
 
     void GraphModel::ComputeNeeded(std::span<const uint32_t> extraRoots)
@@ -558,7 +605,7 @@ namespace ShaderLab::Graph
                 work.push_back(node.id);
             // Data-only analysis has no consumer to pull it, so a pending
             // change demands it by itself.
-            if (node.dirty && node.customEffect.has_value() &&
+            if (node.IsDirty() && node.customEffect.has_value() &&
                 node.customEffect->analysisOutputType == AnalysisOutputType::Typed)
                 work.push_back(node.id);
         }
@@ -593,7 +640,7 @@ namespace ShaderLab::Graph
         // change (the evaluator does not discard it) until it becomes
         // needed again, and must not keep the host re-evaluating meanwhile.
         for (const auto& node : m_nodes)
-            if (node.dirty && node.needed) return true;
+            if (node.IsDirty() && node.needed) return true;
         return false;
     }
 
@@ -881,6 +928,8 @@ namespace ShaderLab::Graph
                         }
                         bobj.SetNamedValue(L"sources", srcs);
                     }
+                    if (binding.commitPolicy != CommitPolicy::Exact)
+                        bobj.SetNamedValue(L"commitPolicy", WDJ::JsonValue::CreateStringValue(CommitPolicyTag(binding.commitPolicy)));
                     bindingsObj.SetNamedValue(propName, bobj);
                 }
                 obj.SetNamedValue(L"propertyBindings", bindingsObj);
@@ -965,6 +1014,8 @@ namespace ShaderLab::Graph
                         WDJ::JsonValue::CreateNumberValue(def.lookupInputCount));
                 if (def.variadicInputs)
                     ced.SetNamedValue(L"variadicInputs", WDJ::JsonValue::CreateBooleanValue(true));
+                if (def.shiftInvariant)
+                    ced.SetNamedValue(L"shiftInvariant", WDJ::JsonValue::CreateBooleanValue(true));
                 ced.SetNamedValue(L"threadGroupX", WDJ::JsonValue::CreateNumberValue(def.threadGroupX));
                 ced.SetNamedValue(L"threadGroupY", WDJ::JsonValue::CreateNumberValue(def.threadGroupY));
                 ced.SetNamedValue(L"threadGroupZ", WDJ::JsonValue::CreateNumberValue(def.threadGroupZ));
@@ -987,6 +1038,8 @@ namespace ShaderLab::Graph
                             fobj.SetNamedValue(L"length", WDJ::JsonValue::CreateNumberValue(fd.arrayLength));
                         if (fd.gpuPublish)
                             fobj.SetNamedValue(L"gpuPublish", WDJ::JsonValue::CreateBooleanValue(true));
+                        if (fd.changeThreshold != 0.0f)
+                            fobj.SetNamedValue(L"changeThreshold", WDJ::JsonValue::CreateNumberValue(fd.changeThreshold));
                         fields.Append(fobj);
                     }
                     ced.SetNamedValue(L"analysisFields", fields);
@@ -1117,6 +1170,15 @@ namespace ShaderLab::Graph
                         }
                     }
 
+                    if (bobj.HasKey(L"commitPolicy"))
+                    {
+                        const auto tag = std::wstring(bobj.GetNamedString(L"commitPolicy"));
+                        if (auto policy = CommitPolicyFromTag(tag))
+                            binding.commitPolicy = *policy;
+                        else
+                            loadErrors.push_back(std::format(L"binding '{}' has unknown commitPolicy '{}', read as exact",
+                                                             propName, tag));
+                    }
                     node.propertyBindings[propName] = std::move(binding);
                 }
             }
@@ -1213,6 +1275,8 @@ namespace ShaderLab::Graph
                     def.lookupInputCount = static_cast<uint32_t>(ced.GetNamedNumber(L"lookupInputCount"));
                 if (ced.HasKey(L"variadicInputs"))
                     def.variadicInputs = ced.GetNamedBoolean(L"variadicInputs");
+                if (ced.HasKey(L"shiftInvariant"))
+                    def.shiftInvariant = ced.GetNamedBoolean(L"shiftInvariant");
                 def.threadGroupX = static_cast<uint32_t>(ced.GetNamedNumber(L"threadGroupX"));
                 def.threadGroupY = static_cast<uint32_t>(ced.GetNamedNumber(L"threadGroupY"));
                 def.threadGroupZ = static_cast<uint32_t>(ced.GetNamedNumber(L"threadGroupZ"));
@@ -1240,6 +1304,8 @@ namespace ShaderLab::Graph
                             fd.arrayLength = static_cast<uint32_t>(fobj.GetNamedNumber(L"length"));
                         if (fobj.HasKey(L"gpuPublish"))
                             fd.gpuPublish = fobj.GetNamedBoolean(L"gpuPublish");
+                        if (fobj.HasKey(L"changeThreshold"))
+                            fd.changeThreshold = static_cast<float>(fobj.GetNamedNumber(L"changeThreshold"));
                         def.analysisFields.push_back(std::move(fd));
                     }
                 }
@@ -1354,7 +1420,7 @@ namespace ShaderLab::Graph
                     node.runtimeError += L" " + error + L";";
             }
 
-            node.dirty = true;
+            node.MarkDirty();
             return node;
         }
 

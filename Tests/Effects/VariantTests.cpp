@@ -121,7 +121,7 @@ float4 main(float4 pos : SV_POSITION, float4 scene : SCENE_POSITION, float4 uv0 
         };
         evalOnce();
         const auto* evaluated = graph.FindNode(nodeId);
-        const bool pendingFirst = evaluated->compilePending && evaluated->cachedOutput == nullptr && evaluated->dirty;
+        const bool pendingFirst = evaluated->compilePending && evaluated->cachedOutput == nullptr && evaluated->IsDirty();
         const auto start = std::chrono::steady_clock::now();
         int frames = 0;
         while (graph.FindNode(nodeId)->compilePending && std::chrono::steady_clock::now() - start < std::chrono::seconds(60))

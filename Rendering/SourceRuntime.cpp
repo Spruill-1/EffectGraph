@@ -38,7 +38,7 @@ namespace ShaderLab::Rendering
         for (auto& node : graph.MutableNodes())
         {
             if (node.type != NodeType::Source) continue;
-            if (scope == SourceScope::Changed && !node.dirty && !factory.HasVideoProvider(node.id))
+            if (scope == SourceScope::Changed && !node.IsDirty() && !factory.HasVideoProvider(node.id))
                 continue;
             factory.PrepareSourceNode(node, devices.dc, devices.d3dDevice, devices.d3dContext);
         }
@@ -54,17 +54,23 @@ namespace ShaderLab::Rendering
         if (anyBoundTime)
         {
             // Upstream values (a Clock's Time) only exist after evaluation.
-            std::vector<uint32_t> dirtyIds;
+            // Each dirty node with its region, so a node dirty in rects (an
+            // input's InvalidateRects) stays dirty in those rects only.
+            std::vector<std::pair<uint32_t, Graph::DirtyRegion>> dirtyNodes;
             for (const auto& node : nodes)
-                if (node.dirty) dirtyIds.push_back(node.id);
+                if (node.IsDirty()) dirtyNodes.emplace_back(node.id, node.Region());
             winrt::com_ptr<ID2D1Image> oldTarget;
             dc->GetTarget(oldTarget.put());
             dc->SetTarget(nullptr);
             evaluator.Evaluate(graph, dc, GraphEvaluator::EvalMode::Frozen);
             dc->SetTarget(oldTarget.get());
             evaluator.ResolveSourceBindings(graph);
-            for (uint32_t id : dirtyIds)
-                if (auto* node = graph.FindNode(id)) node->dirty = true;
+            for (const auto& [id, region] : dirtyNodes)
+                if (auto* node = graph.FindNode(id))
+                {
+                    if (region.IsNone()) node->MarkDirty();
+                    else node->MarkDirty(region);
+                }
         }
 
         struct Pending

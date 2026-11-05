@@ -56,6 +56,7 @@ What the evaluator does with a custom effect is declared on its `CustomEffectDef
 | `dispatchShape` | `PerOutputPixel`, `SingleGroup`, `ReduceGroups`, `ImagePass` | A D3D11 compute node with an image output. Only `PerOutputPixel` is tiled by the evaluator, by the shader's reflected `[numthreads]`; the others dispatch `(1,1,1)` and the runner widens a reduction or image pass itself. |
 | `outputExtent` | `{ sizeParam, columns, rows }` | A fixed output size from a float property: pixel shaders apply `sizeParam × columns` by `sizeParam × rows` (Color Checker: `PatchSize`, 6 × 4), and a generator without one is 512 × 512. D3D11 compute uses it as a square size of at least 64. |
 | `injectedConstants` | `InputMask`, `OutputSize` | cbuffer values the evaluator writes: the connected-pin mask, and `OutputW`/`OutputH` (plus `ImageAW`..`ImageDH` where declared). |
+| `shiftInvariant` | `false` (default), `true` | 1.1: each output pixel depends only on the same pixel of the effect's one image pin (and its parameters and lookup pins), so a move rect (`IEffectGraphInput2::MoveRects`) passes through it as a move and an incremental realize may copy the moved pixels instead of drawing them. Only a pixel shader with exactly one image pin uses it. Saved as `"shiftInvariant": true` in `customEffect` when set, absent otherwise; `ShaderLabEffectDescriptor::shiftInvariant` and an effect library's descriptor carry it. No built-in declares it; a dithering effect that does may differ from a fresh render by up to `cMoveDitherCodes` inside moved pixels ([EffectGraph API](effectgraph-api.md#dirty-rects-11)). |
 
 Built-in descriptors set them (`ShaderLabEffectDescriptor`) and `CreateNode` copies them. Saved graphs write them as string tags. A graph saved before they existed derives each missing one on load with the rules the evaluator used to apply itself (`DeriveContracts`): the kind from the effect id (the ids are in `NodeContracts.h` and never change), the dispatch from the saved thread-group size and a `DiagramSize`/`OutputSize` parameter, the extent and injected values from the property names. A test loads every built-in with its contracts stripped and checks that derivation gives back what the descriptor declares, so an old graph renders as a new one does. A blank custom node, an Effect Designer *Add to graph* and *Update in graph*, and an `effect_compile` of an authored effect (one without a built-in id) derive theirs the same way, always from the node's own property map: host-injected values such as Split Comparison's `InputMask` / `OutputW` / `OutputH` are properties, not parameters, so deriving from parameter defaults alone would drop them. A built-in recompiled with `effect_compile` keeps what its descriptor declares. A D3D11 compute definition is always kind `Shader`, so a blank *Custom D3D11 Compute Shader* node is not mistaken for a parameter node; the canvas decides which nodes are parameter nodes from `nodeKind` too.
 
@@ -71,14 +72,14 @@ Every change to an existing node goes through a setter in `Graph/GraphEdits.h`, 
 | `SetNodeMedia` | `mediaPath`; the host then prepares the source | yes |
 | `RenameNode` | `name` | no: a label |
 | `SetNodePosition`, `MoveNodes` | `position` | no: layout |
-| `MarkNodeChanged` | -- something the node reads outside the graph changed | yes |
+| `MarkNodeChanged` | -- something the node reads outside the graph changed; with a `DirtyRegion`, only there | yes (that region) |
 | `RetryNode` | clears `runtimeError` | yes |
 | `ResetNodeOutput` | `cachedOutput = nullptr` | yes |
 | `ReplaceCustomEffect` | `customEffect`, drops `cachedOutput`; the host calls `UpdateNodeShader` | yes |
 | `SetBindingComponent` | a binding's source component | yes |
 | `RecordNodeGpuTime` | `lastGpuMs`, `gpuState` (perf display) | no |
 
-Each has a node form and a (graph, id) form that returns false for a missing node. A node still being built may have its fields set directly; `Effects::CreateCustomEffectNode` (an authored definition), `EffectRegistry::CreateOutputNode` and `Graph::NewInstanceOf` (another instance of a custom effect, without its bindings) build the common shapes.
+Each has a node form and a (graph, id) form that returns false for a missing node. The dirty state itself is private to `EffectNode` (1.1, decision #238): `IsDirty()`, `Region()` (a `Graph::DirtyRegion`: None, up to 16 rects, or Whole), `MarkDirty()` (Whole), `MarkDirty(region)` (unions with what is already pending) and `ClearDirty()`. Every change but `MarkNodeChanged` with a region is Whole; how a region travels through the graph is in [Topological Evaluation](topological-evaluation.md#dirty-regions). A node still being built may have its fields set directly; `Effects::CreateCustomEffectNode` (an authored definition), `EffectRegistry::CreateOutputNode` and `Graph::NewInstanceOf` (another instance of a custom effect, without its bindings) build the common shapes.
 
 ## Source kinds
 
